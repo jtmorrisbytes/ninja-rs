@@ -12,92 +12,120 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "includes_normalize.h"
-
-#include "string_piece.h"
-#include "string_piece_util.h"
-#include "util.h"
+#include <windows.h>
 
 #include <algorithm>
 #include <iterator>
 #include <sstream>
+#include <string>
+#include <vector>
 
-#include <windows.h>
+#include "includes_normalize.h"
+#include "string_piece.h"
+#include "string_piece_util.h"
+#include "util.h"
 
 using namespace std;
 
-namespace {
+// we are ignoring 'long paths in registry'
+// and attempting to use the W variant of windows apis
+#ifndef WIN32_WIDE_PATH_LIMIT
+#define WIN32_WIDE_PATH_LIMIT 32767
+#endif
 
-bool InternalGetFullPathName(const StringPiece& file_name, char* buffer,
-                             size_t buffer_length, string *err) {
-  DWORD result_size = GetFullPathNameA(file_name.AsString().c_str(),
-                                       buffer_length, buffer, NULL);
+#ifndef RS_CANNON_PATH_
+#define RS_CANNON_PATH_
+extern "C" void write_to_cpp_string(void* ctx, const char* data) {
+  // This is safe! It uses the C++ compiler's string logic.
+  static_cast<std::string*>(ctx)->assign(data);
+}
+
+typedef void (*Abs2Cb)(void* ctx, const char* data);
+extern "C" {
+char* rs_canonicalize_path2(const char* path, uint64_t* slash_bits);
+char* rs_canonicalize_path3(const char* path, size_t* len,
+                            uint64_t* slash_bits);
+// this one uses a cb pattern
+// takes path as input, string as output, then writes the lexical absolute path using cb
+// when possible. 
+void rs_abs_path2(const char* path, void* string_ctx, Abs2Cb cb);
+bool rs_is_same_lexical_drive(const char* a, const char* b);
+}
+#endif
+
+namespace {
+bool InternalGetFullPathName(const StringPiece& file_name, string buffer,
+                             size_t buffer_length, string* err) {
+  // 1. Convert the 8-bit ANSI string to a 16-bit Wide string (Unicode)
+  std::string input = file_name.AsString();
+  int wlen = MultiByteToWideChar(CP_ACP, 0, input.c_str(), -1, NULL, 0);
+  std::wstring winput(wlen, 0);
+  MultiByteToWideChar(CP_ACP, 0, input.c_str(), -1, &winput[0], wlen);
+
+  // 2. Add the magic prefix for long paths if it's not already there
+  if (winput.find(L"\\\\?\\") != 0) {
+    winput = L"\\\\?\\" + winput;
+  }
+
+  // 3. Use the UNICODE version of the utility
+  DWORD result_size = GetFullPathNameW(winput.c_str(), 0, NULL, NULL);
   if (result_size == 0) {
-    *err = "GetFullPathNameA(" + file_name.AsString() + "): " +
-        GetLastErrorString();
-    return false;
-  } else if (result_size > buffer_length) {
-    *err = "path too long";
+    *err = "GetFullPathNameW failed: " + GetLastErrorString();
     return false;
   }
+
+  // 4. Get the full wide path
+  std::wstring wresult(result_size, 0);
+  GetFullPathNameW(winput.c_str(), result_size, &wresult[0], NULL);
+
+  // 5. Convert it BACK to ANSI so the rest of Ninja doesn't have a heart attack
+  // Note: This is where we might use GetShortPathNameA if the path is truly
+  // massive
+  int alen = WideCharToMultiByte(CP_ACP, 0, wresult.c_str(), -1, buffer.data(),
+                                 (int)buffer.size(), NULL, NULL);
+
+  if (alen == 0) {
+    // If it doesn't fit in the buffer, this is where we'd use a
+    // specialized short-path (8.3) fallback to keep the 260 limit happy.
+    *err = "Path still exceeds buffer after normalization";
+    return false;
+  }
+
   return true;
 }
 
+// bool InternalGetFullPathName(const StringPiece& file_name, char* buffer,
+//                              size_t buffer_length, string *err) {
+//   DWORD result_size = GetFullPathNameA(file_name.AsString().c_str(),
+//                                        buffer_length, buffer, NULL);
+//   if (result_size == 0) {
+//     *err = "GetFullPathNameA(" + file_name.AsString() + "): " +
+//         GetLastErrorString();
+//     return false;
+//   } else if (result_size > buffer_length) {
+//     *err = "path too long";
+//     return false;
+//   }
+//   return true;
+// }
+
 bool IsPathSeparator(char c) {
-  return c == '/' ||  c == '\\';
+  return c == '/' || c == '\\';
 }
 
-// Return true if paths a and b are on the same windows drive.
-// Return false if this function cannot check
-// whether or not on the same windows drive.
-bool SameDriveFast(StringPiece a, StringPiece b) {
-  if (a.size() < 3 || b.size() < 3) {
-    return false;
-  }
-
-  if (!islatinalpha(a[0]) || !islatinalpha(b[0])) {
-    return false;
-  }
-
-  if (ToLowerASCII(a[0]) != ToLowerASCII(b[0])) {
-    return false;
-  }
-
-  if (a[1] != ':' || b[1] != ':') {
-    return false;
-  }
-
-  return IsPathSeparator(a[2]) && IsPathSeparator(b[2]);
-}
 
 // Return true if paths a and b are on the same Windows drive.
-bool SameDrive(StringPiece a, StringPiece b, string* err)  {
-  if (SameDriveFast(a, b)) {
-    return true;
-  }
-
-  char a_absolute[_MAX_PATH];
-  char b_absolute[_MAX_PATH];
-  if (!InternalGetFullPathName(a, a_absolute, sizeof(a_absolute), err)) {
-    return false;
-  }
-  if (!InternalGetFullPathName(b, b_absolute, sizeof(b_absolute), err)) {
-    return false;
-  }
-  char a_drive[_MAX_DIR];
-  char b_drive[_MAX_DIR];
-  _splitpath(a_absolute, a_drive, NULL, NULL, NULL);
-  _splitpath(b_absolute, b_drive, NULL, NULL, NULL);
-  return _stricmp(a_drive, b_drive) == 0;
+bool SameDrive(StringPiece a, StringPiece b, string* err) {
+  // sigh ironically another rust function
+  // checks for \\?\C:\ C:\ and \\ using rust
+   return rs_is_same_lexical_drive(a.AsString().c_str(),b.AsString().c_str());
 }
 
 // Check path |s| is FullPath style returned by GetFullPathName.
 // This ignores difference of path separator.
 // This is used not to call very slow GetFullPathName API.
 bool IsFullPathName(StringPiece s) {
-  if (s.size() < 3 ||
-      !islatinalpha(s[0]) ||
-      s[1] != ':' ||
+  if (s.size() < 3 || !islatinalpha(s[0]) || s[1] != ':' ||
       !IsPathSeparator(s[2])) {
     return false;
   }
@@ -109,14 +137,14 @@ bool IsFullPathName(StringPiece s) {
     }
 
     // Check ".".
-    if (i + 1 < s.size() && s[i+1] == '.' &&
-        (i + 2 >= s.size() || IsPathSeparator(s[i+2]))) {
+    if (i + 1 < s.size() && s[i + 1] == '.' &&
+        (i + 2 >= s.size() || IsPathSeparator(s[i + 2]))) {
       return false;
     }
 
     // Check "..".
-    if (i + 2 < s.size() && s[i+1] == '.' && s[i+2] == '.' &&
-        (i + 3 >= s.size() || IsPathSeparator(s[i+3]))) {
+    if (i + 2 < s.size() && s[i + 1] == '.' && s[i + 2] == '.' &&
+        (i + 3 >= s.size() || IsPathSeparator(s[i + 3]))) {
       return false;
     }
   }
@@ -127,6 +155,7 @@ bool IsFullPathName(StringPiece s) {
 }  // anonymous namespace
 
 IncludesNormalize::IncludesNormalize(const string& relative_to) {
+  // ?????
   string err;
   relative_to_ = AbsPath(relative_to, &err);
   if (!err.empty()) {
@@ -136,28 +165,24 @@ IncludesNormalize::IncludesNormalize(const string& relative_to) {
 }
 
 string IncludesNormalize::AbsPath(StringPiece s, string* err) {
-  if (IsFullPathName(s)) {
-    string result = s.AsString();
-    for (size_t i = 0; i < result.size(); ++i) {
-      if (result[i] == '\\') {
-        result[i] = '/';
-      }
-    }
-    return result;
-  }
+  // decided to replace this with rust std::fs::absolute
+  // doesnt touch disk every time but will handle VERY long paths
+  // unless you want to malloc
 
-  char result[_MAX_PATH];
-  if (!InternalGetFullPathName(s, result, sizeof(result), err)) {
-    return "";
+  // c_string input requred
+  string output = "";
+  string input = s.AsString();
+  rs_abs_path2(input.c_str(), &output, write_to_cpp_string);
+  if (output == "") {
+    *err = "Failed to get abs path";
   }
-  for (char* c = result; *c; ++c)
-    if (*c == '\\')
-      *c = '/';
-  return result;
+  return output;
+  // err check
 }
 
-string IncludesNormalize::Relativize(
-    StringPiece path, const vector<StringPiece>& start_list, string* err) {
+string IncludesNormalize::Relativize(StringPiece path,
+                                     const vector<StringPiece>& start_list,
+                                     string* err) {
   string abs_path = AbsPath(path, err);
   if (!err->empty())
     return "";
@@ -181,30 +206,32 @@ string IncludesNormalize::Relativize(
   return JoinStringPiece(rel_list, '/');
 }
 
-bool IncludesNormalize::Normalize(const string& input,
-                                  string* result, string* err) const {
-  char copy[_MAX_PATH + 1];
-  size_t len = input.size();
-  if (len > _MAX_PATH) {
-    *err = "path too long";
+bool IncludesNormalize::Normalize(const string& input, string* result,
+                                  string* err) const {
+  
+  // cannon path first
+  // TODO, fix this ...0,0
+  char* r = rs_canonicalize_path3(input.c_str(),0,0);
+  // then convert to an abs path
+  string partially_fixed = r;
+  rs_cstring_free(r);
+  string abs_input = "";
+
+  rs_abs_path2(partially_fixed.c_str(), &abs_input, write_to_cpp_string);
+  if (abs_input.empty()) {
+    // If Rust failed to return a string, we consider it an error.
+    if (err)
+      *err = "Rustinstein: Failed to normalize path: " + input;
     return false;
   }
-  strncpy(copy, input.c_str(), input.size() + 1);
-  uint64_t slash_bits;
-  CanonicalizePath(copy, &len, &slash_bits);
-  StringPiece partially_fixed(copy, len);
-  string abs_input = AbsPath(partially_fixed, err);
-  if (!err->empty())
-    return false;
-
-  if (!SameDrive(abs_input, relative_to_, err)) {
-    if (!err->empty())
-      return false;
-    *result = partially_fixed.AsString();
+  // samedrive check
+  if(!rs_is_same_lexical_drive(abs_input.c_str(),relative_to_.c_str())) {
+    *result = partially_fixed;
     return true;
   }
   *result = Relativize(abs_input, split_relative_to_, err);
   if (!err->empty())
     return false;
+  // TODO: decide whether or not to keep abs paths
   return true;
 }

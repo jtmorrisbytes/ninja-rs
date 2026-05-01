@@ -115,6 +115,7 @@ bool DepsLog::RecordDeps(Node* node, TimeStamp mtime, int node_count,
   if (!OpenForWriteIfNeeded()) {
     return false;
   }
+  
   size |= 0x80000000;  // Deps record: set high bit.
   if (fwrite(&size, 4, 1, file_) < 1)
     return false;

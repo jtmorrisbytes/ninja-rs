@@ -205,7 +205,11 @@ int Cleaner::CleanTargets(int target_count, char* targets[]) {
       continue;
     }
     uint64_t slash_bits;
-    CanonicalizePath(&target_name, &slash_bits);
+    // target_name.
+    char* r = rs_canonicalize_path2(target_name.c_str(),&slash_bits);
+    // target_name.assign(r);
+    target_name = r;
+    rs_cstring_free(r);
     Node* target = state_->LookupNode(target_name);
     if (target) {
       if (IsVerbose())

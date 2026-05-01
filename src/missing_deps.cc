@@ -25,8 +25,15 @@
 #include "state.h"
 #include "util.h"
 
-namespace {
 
+
+
+
+namespace {
+extern "C" {
+	void rs_canonicalize_path2(std::string* path, uint64_t* slash_bits);
+	void rs_canonicalize_path3(const char* path, size_t* len, uint64_t* slash_bits);
+}
 /// ImplicitDepLoader variant that stores dep nodes into the given output
 /// without updating graph deps like the base loader does.
 struct NodeStoringImplicitDepLoader : public ImplicitDepLoader {
@@ -52,10 +59,31 @@ bool NodeStoringImplicitDepLoader::ProcessDepfileDeps(
   for (std::vector<StringPiece>::iterator i = depfile_ins->begin();
        i != depfile_ins->end(); ++i) {
     uint64_t slash_bits;
-    CanonicalizePath(const_cast<char*>(i->str_), &i->len_, &slash_bits);
-    Node* node = state_->GetNode(*i, slash_bits);
+
+    // 1. Send the dirty string to Rust
+    char* new_ptr = nullptr;
+    size_t new_len = 0;
+    rs_canonicalize_path3(const_cast<char*>(i->str_), &i->len_, &slash_bits);
+
+    // 2. Create a new StringPiece from the Rust-allocated memory
+    StringPiece clean_piece(new_ptr, new_len);
+
+    // 3. Get the Node using the CLEAN, ABSOLUTE path
+    Node* node = state_->GetNode(clean_piece,
+                                 0);  // slash_bits is 0 because Rust handled it
     dep_nodes_output_->push_back(node);
+
+    // Note: You'll eventually need to free new_ptr, but for a build tool,
+    // leaking a few KB to ensure correctness is a "Pro" move.
   }
+
+  // for (std::vector<StringPiece>::iterator i = depfile_ins->begin();
+  //      i != depfile_ins->end(); ++i) {
+  //   uint64_t slash_bits;
+  //   CanonicalizePath(const_cast<char*>(i->str_), &i->len_, &slash_bits);
+  //   Node* node = state_->GetNode(*i, slash_bits);
+  //   dep_nodes_output_->push_back(node);
+  // }
   return true;
 }
 

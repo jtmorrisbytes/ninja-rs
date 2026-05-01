@@ -15,13 +15,13 @@
 #include "util.h"
 
 #ifdef __CYGWIN__
-#include <windows.h>
 #include <io.h>
-#elif defined( _WIN32)
 #include <windows.h>
+#elif defined(_WIN32)
+#include <direct.h>
 #include <io.h>
 #include <share.h>
-#include <direct.h>
+#include <windows.h>
 #endif
 
 #include <assert.h>
@@ -35,8 +35,8 @@
 #include <sys/types.h>
 
 #ifndef _WIN32
-#include <unistd.h>
 #include <sys/time.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -45,14 +45,16 @@
 #if defined(__APPLE__) || defined(__FreeBSD__)
 #include <sys/sysctl.h>
 #elif defined(__SVR4) && defined(__sun)
-#include <unistd.h>
 #include <sys/loadavg.h>
+#include <unistd.h>
 #elif defined(_AIX) && !defined(__PASE__)
 #include <libperfstat.h>
 #elif defined(__linux__) || defined(__GLIBC__)
 #include <sys/sysinfo.h>
+
 #include <fstream>
 #include <map>
+
 #include "string_piece_util.h"
 #endif
 
@@ -61,6 +63,11 @@
 #endif
 
 #include "edit_distance.h"
+extern "C" {
+char* rs_canonicalize_path2(const char* path, uint64_t* slash_bits);
+char* rs_canonicalize_path3(const char* path, size_t* len,
+                            uint64_t* slash_bits);
+}
 
 using namespace std;
 
@@ -126,7 +133,8 @@ void CanonicalizePath(string* path, uint64_t* slash_bits) {
   char* str = 0;
   if (len > 0)
     str = &(*path)[0];
-  CanonicalizePath(str, &len, slash_bits);
+  rs_canonicalize_path3(str, &len, slash_bits);
+  // CanonicalizePath(str, &len, slash_bits);
   path->resize(len);
 }
 
@@ -138,12 +146,30 @@ static bool IsPathSeparator(char c) {
 #endif
 }
 
-void CanonicalizePath(char* path, size_t* len, uint64_t* slash_bits) {
+extern "C" {
+void rs_canonicalize_path(char* path, size_t* len, char* new_ptr,
+                          size_t* new_len, uint64_t* slash_bits);
+}
+
+void CanonicalizePath(char* path, size_t* len, char* new_ptr, size_t* new_len,
+                      uint64_t* slash_bits) {
   // WARNING: this function is performance-critical; please benchmark
   // any changes you make to it.
+  // im sorry google but this is just so broken on windows it really needs a
+  // rust makeover
+  return rs_canonicalize_path(path, len, new_ptr, new_len, slash_bits);
+
   if (*len == 0) {
     return;
   }
+// Ok. Jordan: if we are on windows, and the user specifies a VNC \\?\ then..
+// DO NOTHING FOR NOW
+#ifdef _WIN32
+  if (*len >= 4 && path[0] == '\\' && path[1] == '\\' && path[2] == '?' &&
+      path[3] == '\\') {
+    return;
+  }
+#endif
 
   char* start = path;
   char* dst = start;
@@ -216,10 +242,13 @@ void CanonicalizePath(char* path, size_t* len, uint64_t* slash_bits) {
         continue;  // Ignore empty component, e.g. 'foo//bar' -> 'foo/bar'.
       }
       if (src[0] == '.') {
+        printf("\n[NINJA_DEBUG] cannon windows .");
+
         if (component_len == 1) {
           continue;  // Ignore '.' component, e.g. './foo' -> 'foo'.
         } else if (src[1] == '.') {
           // Process the '..' component if found. Back up if possible.
+          printf("\n[NINJA_DEBUG] cannon windows ..");
           if (component_count > 0) {
             // Move back to start of previous component.
             --component_count;
@@ -227,6 +256,7 @@ void CanonicalizePath(char* path, size_t* len, uint64_t* slash_bits) {
               // nothing to do here, decrement happens before condition check.
             }
           } else {
+            printf("\n[NINJA_DEBUG] cannon windows else ..");
             dst[0] = '.';
             dst[1] = '.';
             dst[2] = src[2];
@@ -292,17 +322,17 @@ void CanonicalizePath(char* path, size_t* len, uint64_t* slash_bits) {
   uint64_t bits = 0;
   uint64_t bits_mask = 1;
 
-  for (char* c = start; c < start + *len; ++c) {
-    switch (*c) {
-      case '\\':
-        bits |= bits_mask;
-        *c = '/';
-        NINJA_FALLTHROUGH;
-      case '/':
-        bits_mask <<= 1;
-    }
-  }
-
+  // for (char* c = start; c < start + *len; ++c) {
+  //   switch (*c) {
+  //     case '\\':
+  //       bits |= bits_mask;
+  //       *c = '/';
+  //       NINJA_FALLTHROUGH;
+  //     case '/':
+  //       bits_mask <<= 1;
+  //   }
+  // }
+  bits_mask = bits_mask;
   *slash_bits = bits;
 #else
   *slash_bits = 0;
@@ -310,42 +340,47 @@ void CanonicalizePath(char* path, size_t* len, uint64_t* slash_bits) {
 }
 
 static inline bool IsKnownShellSafeCharacter(char ch) {
-  if ('A' <= ch && ch <= 'Z') return true;
-  if ('a' <= ch && ch <= 'z') return true;
-  if ('0' <= ch && ch <= '9') return true;
+  if ('A' <= ch && ch <= 'Z')
+    return true;
+  if ('a' <= ch && ch <= 'z')
+    return true;
+  if ('0' <= ch && ch <= '9')
+    return true;
 
   switch (ch) {
-    case '_':
-    case '+':
-    case '-':
-    case '.':
-    case '/':
-      return true;
-    default:
-      return false;
+  case '_':
+  case '+':
+  case '-':
+  case '.':
+  case '/':
+    return true;
+  default:
+    return false;
   }
 }
 
 static inline bool IsKnownWin32SafeCharacter(char ch) {
   switch (ch) {
-    case ' ':
-    case '"':
-      return false;
-    default:
-      return true;
+  case ' ':
+  case '"':
+    return false;
+  default:
+    return true;
   }
 }
 
 static inline bool StringNeedsShellEscaping(const string& input) {
   for (size_t i = 0; i < input.size(); ++i) {
-    if (!IsKnownShellSafeCharacter(input[i])) return true;
+    if (!IsKnownShellSafeCharacter(input[i]))
+      return true;
   }
   return false;
 }
 
 static inline bool StringNeedsWin32Escaping(const string& input) {
   for (size_t i = 0; i < input.size(); ++i) {
-    if (!IsKnownWin32SafeCharacter(input[i])) return true;
+    if (!IsKnownWin32SafeCharacter(input[i]))
+      return true;
   }
   return false;
 }
@@ -376,7 +411,6 @@ void GetShellEscapedString(const string& input, string* result) {
   result->push_back(kQuote);
 }
 
-
 void GetWin32EscapedString(const string& input, string* result) {
   assert(result);
   if (!StringNeedsWin32Escaping(input)) {
@@ -393,18 +427,18 @@ void GetWin32EscapedString(const string& input, string* result) {
   for (string::const_iterator it = input.begin(), end = input.end(); it != end;
        ++it) {
     switch (*it) {
-      case kBackslash:
-        ++consecutive_backslash_count;
-        break;
-      case kQuote:
-        result->append(span_begin, it);
-        result->append(consecutive_backslash_count + 1, kBackslash);
-        span_begin = it;
-        consecutive_backslash_count = 0;
-        break;
-      default:
-        consecutive_backslash_count = 0;
-        break;
+    case kBackslash:
+      ++consecutive_backslash_count;
+      break;
+    case kQuote:
+      result->append(span_begin, it);
+      result->append(consecutive_backslash_count + 1, kBackslash);
+      span_begin = it;
+      consecutive_backslash_count = 0;
+      break;
+    default:
+      consecutive_backslash_count = 0;
+      break;
     }
   }
   result->append(span_begin, input.end());
@@ -487,13 +521,12 @@ void SetCloseOnExec(int fd) {
       perror("fcntl(F_SETFD)");
   }
 #else
-  HANDLE hd = (HANDLE) _get_osfhandle(fd);
-  if (! SetHandleInformation(hd, HANDLE_FLAG_INHERIT, 0)) {
+  HANDLE hd = (HANDLE)_get_osfhandle(fd);
+  if (!SetHandleInformation(hd, HANDLE_FLAG_INHERIT, 0)) {
     fprintf(stderr, "SetHandleInformation(): %s", GetLastErrorString().c_str());
   }
 #endif  // ! _WIN32
 }
-
 
 const char* SpellcheckStringV(const string& text,
                               const vector<const char*>& words) {
@@ -502,10 +535,10 @@ const char* SpellcheckStringV(const string& text,
 
   int min_distance = kMaxValidEditDistance + 1;
   const char* result = NULL;
-  for (vector<const char*>::const_iterator i = words.begin();
-       i != words.end(); ++i) {
-    int distance = EditDistance(*i, text, kAllowReplacements,
-                                kMaxValidEditDistance);
+  for (vector<const char*>::const_iterator i = words.begin(); i != words.end();
+       ++i) {
+    int distance =
+        EditDistance(*i, text, kAllowReplacements, kMaxValidEditDistance);
     if (distance < min_distance) {
       min_distance = distance;
       result = *i;
@@ -532,19 +565,13 @@ string GetLastErrorString() {
   DWORD err = GetLastError();
 
   char* msg_buf;
-  FormatMessageA(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER |
-        FORMAT_MESSAGE_FROM_SYSTEM |
-        FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
-        err,
-        MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
-        (char*)&msg_buf,
-        0,
-        NULL);
+  FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM |
+                     FORMAT_MESSAGE_IGNORE_INSERTS,
+                 NULL, err, MAKELANGID(LANG_ENGLISH, SUBLANG_DEFAULT),
+                 (char*)&msg_buf, 0, NULL);
 
   if (msg_buf == nullptr) {
-    char fallback_msg[128] = {0};
+    char fallback_msg[128] = { 0 };
     snprintf(fallback_msg, sizeof(fallback_msg), "GetLastError() = %lu", err);
     return fallback_msg;
   }
@@ -580,8 +607,10 @@ string StripAnsiEscapeCodes(const string& in) {
     }
 
     // Only strip CSIs for now.
-    if (i + 1 >= in.size()) break;
-    if (in[i + 1] != '[') continue;  // Not a CSI.
+    if (i + 1 >= in.size())
+      break;
+    if (in[i + 1] != '[')
+      continue;  // Not a CSI.
     i += 2;
 
     // Skip everything up to and including the next [a-zA-Z].
@@ -818,14 +847,16 @@ int GetProcessorCount() {
   // Need to use GetLogicalProcessorInformationEx to get real core count on
   // machines with >64 cores. See https://stackoverflow.com/a/31209344/21475
   DWORD len = 0;
-  if (!GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len)
-        && GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
+  if (!GetLogicalProcessorInformationEx(RelationProcessorCore, nullptr, &len) &&
+      GetLastError() == ERROR_INSUFFICIENT_BUFFER) {
     std::vector<char> buf(len);
     int cores = 0;
-    if (GetLogicalProcessorInformationEx(RelationProcessorCore,
-          reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
-            buf.data()), &len)) {
-      for (DWORD i = 0; i < len; ) {
+    if (GetLogicalProcessorInformationEx(
+            RelationProcessorCore,
+            reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
+                buf.data()),
+            &len)) {
+      for (DWORD i = 0; i < len;) {
         auto info = reinterpret_cast<PSYSTEM_LOGICAL_PROCESSOR_INFORMATION_EX>(
             buf.data() + i);
         if (info->Relationship == RelationProcessorCore &&
@@ -870,7 +901,7 @@ int GetProcessorCount() {
   cpuset_t mask;
   CPU_ZERO(&mask);
   if (cpuset_getaffinity(CPU_LEVEL_WHICH, CPU_WHICH_TID, -1, sizeof(mask),
-    &mask) == 0) {
+                         &mask) == 0) {
     return CPU_COUNT(&mask);
   }
 #elif defined(CPU_COUNT)
@@ -879,7 +910,8 @@ int GetProcessorCount() {
     schedCount = CPU_COUNT(&set);
   }
 #endif
-  if (cgroupCount >= 0 && schedCount >= 0) return std::min(cgroupCount, schedCount);
+  if (cgroupCount >= 0 && schedCount >= 0)
+    return std::min(cgroupCount, schedCount);
   if (cgroupCount < 0 && schedCount < 0)
     return static_cast<int>(sysconf(_SC_NPROCESSORS_ONLN));
   return std::max(cgroupCount, schedCount);
@@ -887,8 +919,8 @@ int GetProcessorCount() {
 }
 
 #if defined(_WIN32) || defined(__CYGWIN__)
-static double CalculateProcessorLoad(uint64_t idle_ticks, uint64_t total_ticks)
-{
+static double CalculateProcessorLoad(uint64_t idle_ticks,
+                                     uint64_t total_ticks) {
   static uint64_t previous_idle_ticks = 0;
   static uint64_t previous_total_ticks = 0;
   static double previous_load = -0.0;
@@ -909,7 +941,7 @@ static double CalculateProcessorLoad(uint64_t idle_ticks, uint64_t total_ticks)
     double load_since_last_call = 1.0 - idle_to_total_ratio;
 
     // Filter/smooth result when possible.
-    if(previous_load > 0) {
+    if (previous_load > 0) {
       load = 0.9 * previous_load + 0.1 * load_since_last_call;
     } else {
       load = load_since_last_call;
@@ -923,10 +955,9 @@ static double CalculateProcessorLoad(uint64_t idle_ticks, uint64_t total_ticks)
   return load;
 }
 
-static uint64_t FileTimeToTickCount(const FILETIME & ft)
-{
+static uint64_t FileTimeToTickCount(const FILETIME& ft) {
   uint64_t high = (((uint64_t)(ft.dwHighDateTime)) << 32);
-  uint64_t low  = ft.dwLowDateTime;
+  uint64_t low = ft.dwLowDateTime;
   return (high | low);
 }
 
@@ -975,7 +1006,7 @@ double GetLoadAverage() {
 }
 #elif defined(__HAIKU__)
 double GetLoadAverage() {
-    return -0.0f;
+  return -0.0f;
 }
 #else
 double GetLoadAverage() {
@@ -987,7 +1018,7 @@ double GetLoadAverage() {
   }
   return loadavg[0];
 }
-#endif // _WIN32
+#endif  // _WIN32
 
 std::string GetWorkingDirectory() {
   std::string ret;
@@ -1058,9 +1089,9 @@ bool ReplaceContent(const string& file_dst, const string& new_content,
 }
 
 int platformAwareUnlink(const char* filename) {
-	#ifdef _WIN32
-		return _unlink(filename);
-	#else
-		return unlink(filename);
-	#endif
+#ifdef _WIN32
+  return _unlink(filename);
+#else
+  return unlink(filename);
+#endif
 }

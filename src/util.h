@@ -60,6 +60,16 @@ void Error(const char* msg, va_list ap);
 void Info(const char* msg, ...);
 void Info(const char* msg, va_list ap);
 
+
+extern "C" {
+	char* rs_canonicalize_path2(const char* path, uint64_t* slash_bits);
+	void rs_cstring_free(char* ptr);
+	char* rs_canonicalize_path3(const char* path, size_t* len, uint64_t* slash_bits);
+}
+
+
+
+
 /// Canonicalize a path like "foo/../bar.h" into just "bar.h".
 /// |slash_bits| has bits set starting from lowest for a backslash that was
 /// normalized to a forward slash. (only used on Windows)

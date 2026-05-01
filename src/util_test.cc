@@ -227,82 +227,82 @@ TEST(CanonicalizePath, SlashTracking) {
   uint64_t slash_bits;
 
   path = "foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("foo.h", path);
   EXPECT_EQ(0, slash_bits);
 
   path = "a\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 
   path = "a/bcd/efh\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/bcd/efh/foo.h", path);
   EXPECT_EQ(4, slash_bits);
 
   path = "a\\bcd/efh\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/bcd/efh/foo.h", path);
   EXPECT_EQ(5, slash_bits);
 
   path = "a\\bcd\\efh\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/bcd/efh/foo.h", path);
   EXPECT_EQ(7, slash_bits);
 
   path = "a/bcd/efh/foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/bcd/efh/foo.h", path);
   EXPECT_EQ(0, slash_bits);
 
   path = "a\\./efh\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/efh/foo.h", path);
   EXPECT_EQ(3, slash_bits);
 
   path = "a\\../efh\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("efh/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 
   path = "a\\b\\c\\d\\e\\f\\g\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/b/c/d/e/f/g/foo.h", path);
   EXPECT_EQ(127, slash_bits);
 
   path = "a\\b\\c\\..\\..\\..\\g\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("g/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 
   path = "a\\b/c\\../../..\\g\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("g/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 
   path = "a\\b/c\\./../..\\g\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/g/foo.h", path);
   EXPECT_EQ(3, slash_bits);
 
   path = "a\\b/c\\./../..\\g/foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/g/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 
   path = "a\\\\\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 
   path = "a/\\\\foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/foo.h", path);
   EXPECT_EQ(0, slash_bits);
 
   path = "a\\//foo.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ("a/foo.h", path);
   EXPECT_EQ(1, slash_bits);
 }
@@ -324,7 +324,7 @@ TEST(CanonicalizePath, TooManyComponents) {
   // 64 is OK.
   path = "a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./"
          "a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./x.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, 0x0);
 
   // Backslashes version.
@@ -334,13 +334,13 @@ TEST(CanonicalizePath, TooManyComponents) {
       "a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\"
       "a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\x.h";
 
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, 0xffffffff);
 
   // 65 is OK if #component is less than 60 after path canonicalization.
   path = "a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./"
          "a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./a/./x/y.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, 0x0);
 
   // Backslashes version.
@@ -349,7 +349,7 @@ TEST(CanonicalizePath, TooManyComponents) {
       "a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\"
       "a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\"
       "a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\a\\.\\x\\y.h";
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, uint64_t(0x1ffffffff));
 
 
@@ -357,7 +357,7 @@ TEST(CanonicalizePath, TooManyComponents) {
   path = "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/"
          "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/x/y.h";
   EXPECT_EQ(58, std::count(path.begin(), path.end(), '/'));
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, 0x0);
 
   // Backslashes version.
@@ -367,7 +367,7 @@ TEST(CanonicalizePath, TooManyComponents) {
       "a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\"
       "a\\a\\a\\a\\a\\a\\a\\a\\a\\x\\y.h";
   EXPECT_EQ(58, std::count(path.begin(), path.end(), '\\'));
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, uint64_t(0x3ffffffffffffff));
 
   // More than 60 components is now completely ok too.
@@ -387,7 +387,7 @@ TEST(CanonicalizePath, TooManyComponents) {
       "a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\a\\"
       "a\\a\\a\\a\\a\\a\\a\\a\\a\\x\\y.h";
   EXPECT_EQ(218, std::count(path.begin(), path.end(), '\\'));
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, 0xffffffffffffffff);
 }
 #else   // !_WIN32
@@ -412,7 +412,7 @@ TEST(CanonicalizePath, TooManyComponents) {
       "a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/a/"
       "a/a/a/a/a/a/a/a/a/x/y.h";
   EXPECT_EQ(218, std::count(path.begin(), path.end(), '/'));
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(&path, &slash_bits);
   EXPECT_EQ(slash_bits, 0x0);
 }
 #endif  // !_WIN32

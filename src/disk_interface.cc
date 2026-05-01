@@ -65,52 +65,75 @@ int MakeDir(const string& path) {
 
 #ifdef _WIN32
 TimeStamp TimeStampFromFileTime(const FILETIME& filetime) {
-  // FILETIME is in 100-nanosecond increments since the Windows epoch.
-  // We don't much care about epoch correctness but we do want the
-  // resulting value to fit in a 64-bit integer.
-  uint64_t mtime = ((uint64_t)filetime.dwHighDateTime << 32) |
-    ((uint64_t)filetime.dwLowDateTime);
-  // 1600 epoch -> 2000 epoch (subtract 400 years).
-  return (TimeStamp)mtime - 12622770400LL * (1000000000LL / 100);
+    // 1. Combine the high and low parts into a 64-bit integer
+    // This is still in 100-nanosecond intervals.
+    uint64_t mtime = ((uint64_t)filetime.dwHighDateTime << 32) | ((uint64_t)filetime.dwLowDateTime);
+
+    // 2. Subtract the 1601 -> 1970 offset (11,644,473,600 seconds)
+    // Convert seconds to 100-nanosecond intervals to match the input.
+    const int64_t WindowsToUnixNanos = 11644473600LL * 10000000LL;
+
+    // 3. Return as Unix Time (100-ns intervals since 1970)
+    // This fits easily in a 64-bit integer and is "Future Proof" until 2262.
+    return (TimeStamp)(mtime - WindowsToUnixNanos);
+}
+
+// TimeStamp TimeStampFromFileTime(const FILETIME& filetime) {
+//   // FILETIME is in 100-nanosecond increments since the Windows epoch.
+//   // We don't much care about epoch correctness but we do want the
+//   // resulting value to fit in a 64-bit integer.
+//   uint64_t mtime = ((uint64_t)filetime.dwHighDateTime << 32) |
+//     ((uint64_t)filetime.dwLowDateTime);
+//   // 1600 epoch -> 2000 epoch (subtract 400 years).
+//   return (TimeStamp)mtime - 12622770400LL * (1000000000LL / 100);
+// }
+
+// our rust hack for stat single file
+extern "C"{
+  long long rs_stat_single_file(const char* path, char* err_out);
 }
 
 TimeStamp StatSingleFile(const string& path, string* err) {
-  WIN32_FILE_ATTRIBUTE_DATA attrs;
-  if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &attrs)) {
-    DWORD win_err = GetLastError();
-    if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND)
-      return 0;
-    *err = "GetFileAttributesEx(" + path + "): " + GetLastErrorString();
-    return -1;
-  }
+  // see lib.rs
+  return rs_stat_single_file(path.c_str(),err->data());
 
-  if (attrs.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-    HANDLE hFile = CreateFileA(path.c_str(), 0, 0, 0, OPEN_EXISTING,
-                               FILE_FLAG_BACKUP_SEMANTICS, 0);
-    if (hFile == INVALID_HANDLE_VALUE) {
-      DWORD win_err = GetLastError();
-      if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND)
-        return 0;
-      *err = "CreateFileA(" + path + "): " + GetLastErrorString();
-      CloseHandle(hFile);
-      return -1;
-    }
+  // printf_s("StatSingleFile %s\n",path.c_str());
+  // WIN32_FILE_ATTRIBUTE_DATA attrs;
+  // if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &attrs)) {
+  //   DWORD win_err = GetLastError();
+  //   if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND)
+  //     return 0;
+  //   *err = "GetFileAttributesEx(" + path + "): " + GetLastErrorString();
+  //   return -1;
+  // }
 
-    CHAR pathBuf[MAX_PATH];
-    if (GetFinalPathNameByHandleA(hFile, pathBuf, MAX_PATH,
-                                  FILE_NAME_NORMALIZED) == 0) {
-      DWORD win_err = GetLastError();
-      if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND)
-        return 0;
-      *err = "GetFinalPathNameByHandleA(" + path + "): " + GetLastErrorString();
-      CloseHandle(hFile);
-      return -1;
-    }
-    CloseHandle(hFile);
-    return StatSingleFile(pathBuf, err);
-  }
+  // if (attrs.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
+  //   HANDLE hFile = CreateFileA(path.c_str(), 0, 0, 0, OPEN_EXISTING,
+  //                              FILE_FLAG_BACKUP_SEMANTICS, 0);
+  //   if (hFile == INVALID_HANDLE_VALUE) {
+  //     DWORD win_err = GetLastError();
+  //     if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND)
+  //       return 0;
+  //     *err = "CreateFileA(" + path + "): " + GetLastErrorString();
+  //     CloseHandle(hFile);
+  //     return -1;
+  //   }
 
-  return TimeStampFromFileTime(attrs.ftLastWriteTime);
+  //   CHAR pathBuf[MAX_PATH];
+  //   if (GetFinalPathNameByHandleA(hFile, pathBuf, MAX_PATH,
+  //                                 FILE_NAME_NORMALIZED) == 0) {
+  //     DWORD win_err = GetLastError();
+  //     if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND)
+  //       return 0;
+  //     *err = "GetFinalPathNameByHandleA(" + path + "): " + GetLastErrorString();
+  //     CloseHandle(hFile);
+  //     return -1;
+  //   }
+  //   CloseHandle(hFile);
+  //   return StatSingleFile(pathBuf, err);
+  // }
+
+  // return TimeStampFromFileTime(attrs.ftLastWriteTime);
 }
 
 bool IsWindows7OrLater() {
@@ -122,50 +145,21 @@ bool IsWindows7OrLater() {
   return VerifyVersionInfo(
       &version_info, VER_MAJORVERSION | VER_MINORVERSION, comparison);
 }
-
+typedef void (*StampCallback)(void* context, const char* dir, TimeStamp mtime);
+extern "C" {
+  bool rs_stat_all_files_in_dir(const char* dir, void* ctx, StampCallback cb);
+}
+extern "C" {
+  void add_stamp_to_cpp_string(void* ctx, const char* dir, TimeStamp mtime) {
+    string s = dir;
+    auto* my_map = static_cast<std::map<std::string, TimeStamp>*>(ctx);
+    (*my_map)[s]=mtime;
+  }
+}
 bool StatAllFilesInDir(const string& dir, map<string, TimeStamp>* stamps,
                        string* err) {
-  // FindExInfoBasic is 30% faster than FindExInfoStandard.
-  static bool can_use_basic_info = IsWindows7OrLater();
-  // This is not in earlier SDKs.
-  const FINDEX_INFO_LEVELS kFindExInfoBasic =
-      static_cast<FINDEX_INFO_LEVELS>(1);
-  FINDEX_INFO_LEVELS level =
-      can_use_basic_info ? kFindExInfoBasic : FindExInfoStandard;
-  WIN32_FIND_DATAA ffd;
-  HANDLE find_handle = FindFirstFileExA((dir + "\\*").c_str(), level, &ffd,
-                                        FindExSearchNameMatch, NULL, 0);
-
-  if (find_handle == INVALID_HANDLE_VALUE) {
-    DWORD win_err = GetLastError();
-    if (win_err == ERROR_FILE_NOT_FOUND || win_err == ERROR_PATH_NOT_FOUND ||
-        win_err == ERROR_DIRECTORY)
-      return true;
-    *err = "FindFirstFileExA(" + dir + "): " + GetLastErrorString();
-    return false;
-  }
-  do {
-    string lowername = ffd.cFileName;
-    if (lowername == "..") {
-      // Seems to just copy the timestamp for ".." from ".", which is wrong.
-      // This is the case at least on NTFS under Windows 7.
-      continue;
-    }
-
-    transform(lowername.begin(), lowername.end(), lowername.begin(), ::tolower);
-
-    if (ffd.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) {
-      // File is a symlink, stat the linked file.
-      stamps->insert(make_pair(
-          lowername, StatSingleFile(dir + "\\" + ffd.cFileName, err)));
-    } else {
-      stamps->insert(
-          make_pair(lowername, TimeStampFromFileTime(ffd.ftLastWriteTime)));
-    }
-
-  } while (FindNextFileA(find_handle, &ffd));
-  FindClose(find_handle);
-  return true;
+  // uses rust pathbuf and direntry instead, and gets the mtime
+  return rs_stat_all_files_in_dir(dir.c_str(),stamps,add_stamp_to_cpp_string);
 }
 #endif  // _WIN32
 
@@ -215,16 +209,17 @@ RealDiskInterface::RealDiskInterface()
 TimeStamp RealDiskInterface::Stat(const string& path, string* err) const {
   METRIC_RECORD("node stat");
 #ifdef _WIN32
+// printf("\n[NINJA_DEBUG] stat Attempting to open: %s\n", (path + "\\*").c_str());
   // MSDN: "Naming Files, Paths, and Namespaces"
   // http://msdn.microsoft.com/en-us/library/windows/desktop/aa365247(v=vs.85).aspx
-  if (!path.empty() && !AreLongPathsEnabled() && path[0] != '\\' &&
-      path.size() > MAX_PATH) {
-    ostringstream err_stream;
-    err_stream << "Stat(" << path << "): Filename longer than " << MAX_PATH
-               << " characters";
-    *err = err_stream.str();
-    return -1;
-  }
+  // if (!path.empty() && !AreLongPathsEnabled() && path[0] != '\\' &&
+  //     path.size()) {
+  //   ostringstream err_stream;
+  //   err_stream << "Stat(" << path << "): Filename longer than " << MAX_PATH
+  //              << " characters";
+  //   *err = err_stream.str();
+  //   return -1;
+  // }
   if (!use_cache_)
     return StatSingleFile(path, err);
 

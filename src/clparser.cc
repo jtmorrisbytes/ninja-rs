@@ -40,21 +40,30 @@ bool EndsWith(const string& input, const string& needle) {
 
 }  // anonymous namespace
 
+
+extern "C" {
+  char* rs_clparser__filter_show_includes(const char* line, const char* deps_prefix);
+}
+
 // static
 string CLParser::FilterShowIncludes(const string& line,
                                     const string& deps_prefix) {
   const string kDepsPrefixEnglish = "Note: including file: ";
-  const char* in = line.c_str();
-  const char* end = in + line.size();
   const string& prefix = deps_prefix.empty() ? kDepsPrefixEnglish : deps_prefix;
-  if (end - in > (int)prefix.size() &&
-      memcmp(in, prefix.c_str(), (int)prefix.size()) == 0) {
-    in += prefix.size();
-    while (*in == ' ')
-      ++in;
-    return line.substr(in - line.c_str());
-  }
-  return "";
+  char* r = rs_clparser__filter_show_includes(line.c_str(),prefix.c_str());
+  string o = r;
+  rs_cstring_free(r);
+  return o;
+  // const char* in = line.c_str();
+  // const char* end = in + line.size();
+  // if (end - in > (int)prefix.size() &&
+  //     memcmp(in, prefix.c_str(), (int)prefix.size()) == 0) {
+  //   in += prefix.size();
+  //   while (*in == ' ')
+  //     ++in;
+  //   return line.substr(in - line.c_str());
+  // }
+  // return "";
 }
 
 // static
@@ -77,10 +86,13 @@ bool CLParser::FilterInputFilename(string line) {
 }
 
 // static
+extern "C" {
+  bool rs_clparser__parse(const char*,const char*,char*,char*);
+}
 bool CLParser::Parse(const string& output, const string& deps_prefix,
                      string* filtered_output, string* err) {
   METRIC_RECORD("CLParser::Parse");
-
+  rs_clparser__parse(output.c_str(),deps_prefix.c_str(),filtered_output->data(),err->data());
   // Loop over all lines in the output to process them.
   assert(&output != filtered_output);
   size_t start = 0;
@@ -106,7 +118,7 @@ bool CLParser::Parse(const string& output, const string& deps_prefix,
       // TODO: should this make the path relative to cwd?
       normalized = include;
       uint64_t slash_bits;
-      CanonicalizePath(&normalized, &slash_bits);
+      rs_canonicalize_path2(normalized.c_str(), &slash_bits);
 #endif
       if (!IsSystemInclude(normalized))
         includes_.insert(normalized);

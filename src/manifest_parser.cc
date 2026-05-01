@@ -200,7 +200,9 @@ bool ManifestParser::ParseDefault(string* err) {
     if (path.empty())
       return lexer_.Error("empty path", err);
     uint64_t slash_bits;  // Unused because this only does lookup.
-    CanonicalizePath(&path, &slash_bits);
+    char* r = rs_canonicalize_path2(path.c_str(), &slash_bits);
+    path.assign(r);
+    rs_cstring_free(r);
     std::string default_err;
     if (!state_->AddDefault(path, &default_err))
       return lexer_.Error(default_err, err);
@@ -342,8 +344,17 @@ bool ManifestParser::ParseEdge(string* err) {
     if (path.empty())
       return lexer_.Error("empty path", err);
     uint64_t slash_bits;
-    CanonicalizePath(&path, &slash_bits);
-    if (!state_->AddOut(edge, path, slash_bits, err)) {
+    
+    // rust uses its std::fs::canonicalize to turn this into a full path
+    {
+      char* r = rs_canonicalize_path2(path.c_str(), &slash_bits);
+      string p = r;
+      path.swap(p);
+      rs_cstring_free(r);
+    }
+    if (
+      !state_->AddOut(edge, path, slash_bits, err)
+    ) {
       lexer_.Error(std::string(*err), err);
       return false;
     }
@@ -364,7 +375,9 @@ bool ManifestParser::ParseEdge(string* err) {
     if (path.empty())
       return lexer_.Error("empty path", err);
     uint64_t slash_bits;
-    CanonicalizePath(&path, &slash_bits);
+    char* r = rs_canonicalize_path2(path.c_str(),&slash_bits);
+    path.assign(r);
+    rs_cstring_free(r);
     state_->AddIn(edge, path, slash_bits);
   }
   edge->implicit_deps_ = implicit;
@@ -377,7 +390,9 @@ bool ManifestParser::ParseEdge(string* err) {
     if (path.empty())
       return lexer_.Error("empty path", err);
     uint64_t slash_bits;
-    CanonicalizePath(&path, &slash_bits);
+    char* r = rs_canonicalize_path2(path.c_str(), &slash_bits);
+    path.assign(r);
+    rs_cstring_free(r);
     state_->AddValidation(edge, path, slash_bits);
   }
 
@@ -406,7 +421,10 @@ bool ManifestParser::ParseEdge(string* err) {
   string dyndep = edge->GetUnescapedDyndep();
   if (!dyndep.empty()) {
     uint64_t slash_bits;
-    CanonicalizePath(&dyndep, &slash_bits);
+
+    char* r = rs_canonicalize_path2(dyndep.c_str(), &slash_bits);
+    dyndep.assign(r);
+    rs_cstring_free(r);
     edge->dyndep_ = state_->GetNode(dyndep, slash_bits);
     edge->dyndep_->set_dyndep_pending(true);
     vector<Node*>::iterator dgi =

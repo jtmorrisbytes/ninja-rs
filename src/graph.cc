@@ -691,7 +691,7 @@ bool ImplicitDepLoader::LoadDepFile(Edge* edge, const string& path,
 
   uint64_t unused;
   std::vector<StringPiece>::iterator primary_out = depfile.outs_.begin();
-  CanonicalizePath(const_cast<char*>(primary_out->str_), &primary_out->len_,
+  rs_canonicalize_path3(const_cast<char*>(primary_out->str_), &primary_out->len_,
                    &unused);
 
   // Check that this depfile matches the edge's output, if not return false to
@@ -728,7 +728,7 @@ bool ImplicitDepLoader::ProcessDepfileDeps(
   for (std::vector<StringPiece>::iterator i = depfile_ins->begin();
        i != depfile_ins->end(); ++i, ++implicit_dep) {
     uint64_t slash_bits;
-    CanonicalizePath(const_cast<char*>(i->str_), &i->len_, &slash_bits);
+    rs_canonicalize_path3(const_cast<char*>(i->str_), &i->len_, &slash_bits);
     Node* node = state_->GetNode(*i, slash_bits);
     *implicit_dep = node;
     node->AddOutEdge(edge);

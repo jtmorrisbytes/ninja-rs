@@ -273,7 +273,7 @@ bool NinjaMain::RebuildManifest(const char* input_file, string* err,
     return false;
   }
   uint64_t slash_bits;  // Unused because this path is only used for lookup.
-  CanonicalizePath(&path, &slash_bits);
+  rs_canonicalize_path2(path.c_str(), &slash_bits);
   Node* node = state_.LookupNode(path);
   if (!node)
     return false;
@@ -321,8 +321,10 @@ Node* NinjaMain::CollectTarget(const char* cpath, string* err) {
     return NULL;
   }
   uint64_t slash_bits;
-  CanonicalizePath(&path, &slash_bits);
-
+  char* r = rs_canonicalize_path2(path.c_str(), &slash_bits);
+  string p = r;
+  path.swap(p);
+  rs_cstring_free(r);
   // Special syntax: "foo.cc^" means "the first output of foo.cc".
   bool first_dependent = false;
   if (!path.empty() && path[path.size() - 1] == '^') {

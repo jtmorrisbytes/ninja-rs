@@ -398,7 +398,7 @@ else:
         cflags.append('-D_LARGE_FILES')
 
 
-libs = []
+libs = [".\\target\\i686-pc-windows-msvc\\debug\\ninja_rs.lib",".\\target\\debug\\ninja_rs.lib"]
 
 if platform.is_mingw():
     cflags.remove('-fvisibility=hidden');
@@ -590,6 +590,8 @@ n.newline()
 
 if platform.is_msvc():
     libs.append('ninja.lib')
+    # required for rust to link
+    libs.extend(["ws2_32.lib","shell32.lib","kernel32.lib","user32.lib","advapi32.lib","ntdll.lib","userenv.lib"])
 else:
     libs.append('-lninja')
 
