@@ -183,6 +183,7 @@ string IncludesNormalize::AbsPath(StringPiece s, string* err) {
 string IncludesNormalize::Relativize(StringPiece path,
                                      const vector<StringPiece>& start_list,
                                      string* err) {
+  printf_s("Relativize %s\n",path.AsString().c_str());
   string abs_path = AbsPath(path, err);
   if (!err->empty())
     return "";
@@ -205,33 +206,48 @@ string IncludesNormalize::Relativize(StringPiece path,
     return ".";
   return JoinStringPiece(rel_list, '/');
 }
+extern "C" {
+  bool rs_includes_normalize(const char* input,const char* relative_to,char** output,char** c_err);
+}
 
 bool IncludesNormalize::Normalize(const string& input, string* result,
                                   string* err) const {
   
-  // cannon path first
-  // TODO, fix this ...0,0
-  char* r = rs_canonicalize_path3(input.c_str(),0,0);
-  // then convert to an abs path
-  string partially_fixed = r;
-  rs_cstring_free(r);
-  string abs_input = "";
 
-  rs_abs_path2(partially_fixed.c_str(), &abs_input, write_to_cpp_string);
-  if (abs_input.empty()) {
-    // If Rust failed to return a string, we consider it an error.
-    if (err)
-      *err = "Rustinstein: Failed to normalize path: " + input;
-    return false;
+  char* r = nullptr;
+  char* c_err = nullptr;
+  bool b = rs_includes_normalize(input.c_str(),relative_to_.c_str(),&r,&c_err);
+  result->assign(r);
+  rs_cstring_free(r);
+  if (c_err != nullptr) {
+    err->assign(c_err);
+    rs_cstring_free(c_err);
   }
-  // samedrive check
-  if(!rs_is_same_lexical_drive(abs_input.c_str(),relative_to_.c_str())) {
-    *result = partially_fixed;
-    return true;
-  }
-  *result = Relativize(abs_input, split_relative_to_, err);
-  if (!err->empty())
-    return false;
-  // TODO: decide whether or not to keep abs paths
-  return true;
+  return b;
+
+  // // cannon path first
+  // // TODO, fix this ...0,0
+  // char* r = rs_canonicalize_path3(input.c_str(),0,0);
+  // // then convert to an abs path
+  // string partially_fixed = r;
+  // rs_cstring_free(r);
+  // string abs_input = "";
+
+  // rs_abs_path2(partially_fixed.c_str(), &abs_input, write_to_cpp_string);
+  // if (abs_input.empty()) {
+  //   // If Rust failed to return a string, we consider it an error.
+  //   if (err)
+  //     *err = "Rustinstein: Failed to normalize path: " + input;
+  //   return false;
+  // }
+  // // samedrive check
+  // if(!rs_is_same_lexical_drive(abs_input.c_str(),relative_to_.c_str())) {
+  //   *result = partially_fixed;
+  //   return true;
+  // }
+  // *result = Relativize(abs_input, split_relative_to_, err);
+  // if (!err->empty())
+  //   return false;
+  // // TODO: decide whether or not to keep abs paths
+  // return true;
 }

@@ -3,6 +3,8 @@
 *.exe
 *.pdb
 *.ilk
+/build/*
+
 /build*/
 /build.ninja
 /ninja
@@ -48,3 +50,10 @@
 # Visual Studio files
 /.vs/
 /out/
+
+*.vcxproj.filters
+*.vcxproj
+*.sln
+cmakecache.txt
+
+target/
