@@ -65,16 +65,16 @@ pub fn win32_includes_normalized(
     }
     let base_remaining = p_relative_to.components().skip(common_comps).count();
     for _ in 0..base_remaining {
-        output.push_str("../");
+        output.push_str(crate::RHS_PARENT_DIR_STR);
     }
     let input_remaining: Vec<_> = abs_input
         .components()
         .skip(common_comps)
         .map(|c| c.as_os_str().to_string_lossy())
         .collect();
-    output.push_str(&input_remaining.join(crate::RHS_PARENT_DIR_STR));
+    output.push_str(&input_remaining.join(crate::RHS_PATH_SEP_STR));
 
-    println!("input {input:} output:{output} relative_to {relative_to:?}");
+    // println!("relativze: input {input:} output:{output} relative_to {relative_to:?}");
     Ok(true)
 }
 

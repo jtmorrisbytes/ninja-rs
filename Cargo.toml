@@ -6,3 +6,25 @@ edition="2024"
 
 [lib]
 crate-type = ["staticlib","rlib"] # This generates a .lib file on Windows
+
+[profile.dev]
+opt-level= 3
+debug=true
+strip=false
+
+[target.'cfg(target_os="windows")'.dependencies.windows]
+version = "0.62.2"
+features = [
+    "Win32_System_LibraryLoader",
+    "Win32_System_WindowsProgramming", # For RtlSetCurrentDirectory_U
+    "Win32_Foundation",               # For NTSTATUS codes and basic types
+]
+
+[build-dependencies]
+embed-resource = "3.0.9"
+cc = "1.0"
+find-msvc-tools = "0.1"
+
+[dependencies]
+find-msvc-tools = "0.1"
+terminal_size = "0.4.4"

@@ -17,7 +17,17 @@
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+
+#if defined(_WIN32)
+#include <io.h>
+#include <process.h>
+#define STDIN_FILENO 0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+#else
 #include <unistd.h>
+#endif
+
 #include <vector>
 
 #include "build/browse_py.h"

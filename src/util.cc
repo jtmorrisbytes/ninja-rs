@@ -138,206 +138,206 @@ void CanonicalizePath(string* path, uint64_t* slash_bits) {
   path->resize(len);
 }
 
-static bool IsPathSeparator(char c) {
-#ifdef _WIN32
-  return c == '/' || c == '\\';
-#else
-  return c == '/';
-#endif
-}
+// static bool IsPathSeparator(char c) {
+// #ifdef _WIN32
+//   return c == '/' || c == '\\';
+// #else
+//   return c == '/';
+// #endif
+// }
 
-extern "C" {
-void rs_canonicalize_path(char* path, size_t* len, char* new_ptr,
-                          size_t* new_len, uint64_t* slash_bits);
-}
+// extern "C" {
+// void rs_canonicalize_path(char* path, size_t* len, char* new_ptr,
+//                           size_t* new_len, uint64_t* slash_bits);
+// }
 
-void CanonicalizePath(char* path, size_t* len, char* new_ptr, size_t* new_len,
-                      uint64_t* slash_bits) {
-  // WARNING: this function is performance-critical; please benchmark
-  // any changes you make to it.
-  // im sorry google but this is just so broken on windows it really needs a
-  // rust makeover
-  return rs_canonicalize_path(path, len, new_ptr, new_len, slash_bits);
+// void CanonicalizePath(char* path, size_t* len, char* new_ptr, size_t* new_len,
+//                       uint64_t* slash_bits) {
+//   // WARNING: this function is performance-critical; please benchmark
+//   // any changes you make to it.
+//   // im sorry google but this is just so broken on windows it really needs a
+//   // rust makeover
+//   new_ptr =  rs_canonicalize_path2(path, slash_bits);
+  
+//   if (*len == 0) {
+//     return;
+//   }
+// // Ok. Jordan: if we are on windows, and the user specifies a VNC \\?\ then..
+// // DO NOTHING FOR NOW
+// #ifdef _WIN32
+//   if (*len >= 4 && path[0] == '\\' && path[1] == '\\' && path[2] == '?' &&
+//       path[3] == '\\') {
+//     return;
+//   }
+// #endif
 
-  if (*len == 0) {
-    return;
-  }
-// Ok. Jordan: if we are on windows, and the user specifies a VNC \\?\ then..
-// DO NOTHING FOR NOW
-#ifdef _WIN32
-  if (*len >= 4 && path[0] == '\\' && path[1] == '\\' && path[2] == '?' &&
-      path[3] == '\\') {
-    return;
-  }
-#endif
+//   char* start = path;
+//   char* dst = start;
+//   char* dst_start = dst;
+//   const char* src = start;
+//   const char* end = start + *len;
+//   const char* src_next;
 
-  char* start = path;
-  char* dst = start;
-  char* dst_start = dst;
-  const char* src = start;
-  const char* end = start + *len;
-  const char* src_next;
+//   // For absolute paths, skip the leading directory separator
+//   // as this one should never be removed from the result.
+//   if (IsPathSeparator(*src)) {
+// #ifdef _WIN32
+//     // Windows network path starts with //
+//     if (src + 2 <= end && IsPathSeparator(src[1])) {
+//       src += 2;
+//       dst += 2;
+//     } else {
+//       ++src;
+//       ++dst;
+//     }
+// #else
+//     ++src;
+//     ++dst;
+// #endif
+//     dst_start = dst;
+//   } else {
+//     // For relative paths, skip any leading ../ as these are quite common
+//     // to reference source files in build plans, and doing this here makes
+//     // the loop work below faster in general.
+//     while (src + 3 <= end && src[0] == '.' && src[1] == '.' &&
+//            IsPathSeparator(src[2])) {
+//       src += 3;
+//       dst += 3;
+//     }
+//   }
 
-  // For absolute paths, skip the leading directory separator
-  // as this one should never be removed from the result.
-  if (IsPathSeparator(*src)) {
-#ifdef _WIN32
-    // Windows network path starts with //
-    if (src + 2 <= end && IsPathSeparator(src[1])) {
-      src += 2;
-      dst += 2;
-    } else {
-      ++src;
-      ++dst;
-    }
-#else
-    ++src;
-    ++dst;
-#endif
-    dst_start = dst;
-  } else {
-    // For relative paths, skip any leading ../ as these are quite common
-    // to reference source files in build plans, and doing this here makes
-    // the loop work below faster in general.
-    while (src + 3 <= end && src[0] == '.' && src[1] == '.' &&
-           IsPathSeparator(src[2])) {
-      src += 3;
-      dst += 3;
-    }
-  }
+//   // Loop over all components of the paths _except_ the last one, in
+//   // order to simplify the loop's code and make it faster.
+//   int component_count = 0;
+//   char* dst0 = dst;
+//   for (; src < end; src = src_next) {
+// #ifndef _WIN32
+//     // Use memchr() for faster lookups thanks to optimized C library
+//     // implementation. `hyperfine canon_perftest` shows a significant
+//     // difference (e,g, 484ms vs 437ms).
+//     const char* next_sep =
+//         static_cast<const char*>(::memchr(src, '/', end - src));
+//     if (!next_sep) {
+//       // This is the last component, will be handled out of the loop.
+//       break;
+//     }
+// #else
+//     // Need to check for both '/' and '\\' so do not use memchr().
+//     // Cannot use strpbrk() because end[0] can be \0 or something else!
+//     const char* next_sep = src;
+//     while (next_sep != end && !IsPathSeparator(*next_sep))
+//       ++next_sep;
+//     if (next_sep == end) {
+//       // This is the last component, will be handled out of the loop.
+//       break;
+//     }
+// #endif
+//     // Position for next loop iteration.
+//     src_next = next_sep + 1;
+//     // Length of the component, excluding trailing directory.
+//     size_t component_len = next_sep - src;
 
-  // Loop over all components of the paths _except_ the last one, in
-  // order to simplify the loop's code and make it faster.
-  int component_count = 0;
-  char* dst0 = dst;
-  for (; src < end; src = src_next) {
-#ifndef _WIN32
-    // Use memchr() for faster lookups thanks to optimized C library
-    // implementation. `hyperfine canon_perftest` shows a significant
-    // difference (e,g, 484ms vs 437ms).
-    const char* next_sep =
-        static_cast<const char*>(::memchr(src, '/', end - src));
-    if (!next_sep) {
-      // This is the last component, will be handled out of the loop.
-      break;
-    }
-#else
-    // Need to check for both '/' and '\\' so do not use memchr().
-    // Cannot use strpbrk() because end[0] can be \0 or something else!
-    const char* next_sep = src;
-    while (next_sep != end && !IsPathSeparator(*next_sep))
-      ++next_sep;
-    if (next_sep == end) {
-      // This is the last component, will be handled out of the loop.
-      break;
-    }
-#endif
-    // Position for next loop iteration.
-    src_next = next_sep + 1;
-    // Length of the component, excluding trailing directory.
-    size_t component_len = next_sep - src;
+//     if (component_len <= 2) {
+//       if (component_len == 0) {
+//         continue;  // Ignore empty component, e.g. 'foo//bar' -> 'foo/bar'.
+//       }
+//       if (src[0] == '.') {
+//         printf("\n[NINJA_DEBUG] cannon windows .");
 
-    if (component_len <= 2) {
-      if (component_len == 0) {
-        continue;  // Ignore empty component, e.g. 'foo//bar' -> 'foo/bar'.
-      }
-      if (src[0] == '.') {
-        printf("\n[NINJA_DEBUG] cannon windows .");
+//         if (component_len == 1) {
+//           continue;  // Ignore '.' component, e.g. './foo' -> 'foo'.
+//         } else if (src[1] == '.') {
+//           // Process the '..' component if found. Back up if possible.
+//           printf("\n[NINJA_DEBUG] cannon windows ..");
+//           if (component_count > 0) {
+//             // Move back to start of previous component.
+//             --component_count;
+//             while (--dst > dst0 && !IsPathSeparator(dst[-1])) {
+//               // nothing to do here, decrement happens before condition check.
+//             }
+//           } else {
+//             printf("\n[NINJA_DEBUG] cannon windows else ..");
+//             dst[0] = '.';
+//             dst[1] = '.';
+//             dst[2] = src[2];
+//             dst += 3;
+//           }
+//           continue;
+//         }
+//       }
+//     }
+//     ++component_count;
 
-        if (component_len == 1) {
-          continue;  // Ignore '.' component, e.g. './foo' -> 'foo'.
-        } else if (src[1] == '.') {
-          // Process the '..' component if found. Back up if possible.
-          printf("\n[NINJA_DEBUG] cannon windows ..");
-          if (component_count > 0) {
-            // Move back to start of previous component.
-            --component_count;
-            while (--dst > dst0 && !IsPathSeparator(dst[-1])) {
-              // nothing to do here, decrement happens before condition check.
-            }
-          } else {
-            printf("\n[NINJA_DEBUG] cannon windows else ..");
-            dst[0] = '.';
-            dst[1] = '.';
-            dst[2] = src[2];
-            dst += 3;
-          }
-          continue;
-        }
-      }
-    }
-    ++component_count;
+//     // Copy or skip component, including trailing directory separator.
+//     if (dst != src) {
+//       ::memmove(dst, src, src_next - src);
+//     }
+//     dst += src_next - src;
+//   }
 
-    // Copy or skip component, including trailing directory separator.
-    if (dst != src) {
-      ::memmove(dst, src, src_next - src);
-    }
-    dst += src_next - src;
-  }
+//   // Handling the last component that does not have a trailing separator.
+//   // The logic here is _slightly_ different since there is no trailing
+//   // directory separator.
+//   size_t component_len = end - src;
+//   do {
+//     if (component_len == 0)
+//       break;  // Ignore empty component (e.g. 'foo//' -> 'foo/')
+//     if (src[0] == '.') {
+//       if (component_len == 1)
+//         break;  // Ignore trailing '.' (e.g. 'foo/.' -> 'foo/')
+//       if (component_len == 2 && src[1] == '.') {
+//         // Handle '..'. Back up if possible.
+//         if (component_count > 0) {
+//           while (--dst > dst0 && !IsPathSeparator(dst[-1])) {
+//             // nothing to do here, decrement happens before condition check.
+//           }
+//         } else {
+//           dst[0] = '.';
+//           dst[1] = '.';
+//           dst += 2;
+//           // No separator to add here.
+//         }
+//         break;
+//       }
+//     }
+//     // Skip or copy last component, no trailing separator.
+//     if (dst != src) {
+//       ::memmove(dst, src, component_len);
+//     }
+//     dst += component_len;
+//   } while (0);
 
-  // Handling the last component that does not have a trailing separator.
-  // The logic here is _slightly_ different since there is no trailing
-  // directory separator.
-  size_t component_len = end - src;
-  do {
-    if (component_len == 0)
-      break;  // Ignore empty component (e.g. 'foo//' -> 'foo/')
-    if (src[0] == '.') {
-      if (component_len == 1)
-        break;  // Ignore trailing '.' (e.g. 'foo/.' -> 'foo/')
-      if (component_len == 2 && src[1] == '.') {
-        // Handle '..'. Back up if possible.
-        if (component_count > 0) {
-          while (--dst > dst0 && !IsPathSeparator(dst[-1])) {
-            // nothing to do here, decrement happens before condition check.
-          }
-        } else {
-          dst[0] = '.';
-          dst[1] = '.';
-          dst += 2;
-          // No separator to add here.
-        }
-        break;
-      }
-    }
-    // Skip or copy last component, no trailing separator.
-    if (dst != src) {
-      ::memmove(dst, src, component_len);
-    }
-    dst += component_len;
-  } while (0);
+//   // Remove trailing path separator if any, but keep the initial
+//   // path separator(s) if there was one (or two on Windows).
+//   if (dst > dst_start && IsPathSeparator(dst[-1]))
+//     dst--;
 
-  // Remove trailing path separator if any, but keep the initial
-  // path separator(s) if there was one (or two on Windows).
-  if (dst > dst_start && IsPathSeparator(dst[-1]))
-    dst--;
+//   if (dst == start) {
+//     // Handle special cases like "aa/.." -> "."
+//     *dst++ = '.';
+//   }
 
-  if (dst == start) {
-    // Handle special cases like "aa/.." -> "."
-    *dst++ = '.';
-  }
+//   *len = dst - start;  // dst points after the trailing char here.
+// #ifdef _WIN32
+//   uint64_t bits = 0;
+//   uint64_t bits_mask = 1;
 
-  *len = dst - start;  // dst points after the trailing char here.
-#ifdef _WIN32
-  uint64_t bits = 0;
-  uint64_t bits_mask = 1;
-
-  // for (char* c = start; c < start + *len; ++c) {
-  //   switch (*c) {
-  //     case '\\':
-  //       bits |= bits_mask;
-  //       *c = '/';
-  //       NINJA_FALLTHROUGH;
-  //     case '/':
-  //       bits_mask <<= 1;
-  //   }
-  // }
-  bits_mask = bits_mask;
-  *slash_bits = bits;
-#else
-  *slash_bits = 0;
-#endif
-}
+//   // for (char* c = start; c < start + *len; ++c) {
+//   //   switch (*c) {
+//   //     case '\\':
+//   //       bits |= bits_mask;
+//   //       *c = '/';
+//   //       NINJA_FALLTHROUGH;
+//   //     case '/':
+//   //       bits_mask <<= 1;
+//   //   }
+//   // }
+//   bits_mask = bits_mask;
+//   *slash_bits = bits;
+// #else
+//   *slash_bits = 0;
+// #endif
+// }
 
 static inline bool IsKnownShellSafeCharacter(char ch) {
   if ('A' <= ch && ch <= 'Z')
@@ -446,70 +446,104 @@ void GetWin32EscapedString(const string& input, string* result) {
   result->push_back(kQuote);
 }
 
-int ReadFile(const string& path, string* contents, string* err) {
-#ifdef _WIN32
-  // This makes a ninja run on a set of 1500 manifest files about 4% faster
-  // than using the generic fopen code below.
-  err->clear();
-  HANDLE f = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
-                           OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
-  if (f == INVALID_HANDLE_VALUE) {
-    err->assign(GetLastErrorString());
-    return -ENOENT;
-  }
+typedef void (*ReadFileCB)(void* ctx, char* data,size_t len);
 
-  for (;;) {
-    DWORD len;
-    char buf[64 << 10];
-    if (!::ReadFile(f, buf, sizeof(buf), &len, NULL)) {
-      err->assign(GetLastErrorString());
-      contents->clear();
-      ::CloseHandle(f);
-      return -EIO;
-    }
-    if (len == 0)
-      break;
-    contents->append(buf, len);
-  }
-  ::CloseHandle(f);
-  return 0;
-#else
-  FILE* f = fopen(path.c_str(), "rb");
-  if (!f) {
-    err->assign(strerror(errno));
-    return -errno;
-  }
-
-#ifdef __USE_LARGEFILE64
-  struct stat64 st;
-  if (fstat64(fileno(f), &st) < 0) {
-#else
-  struct stat st;
-  if (fstat(fileno(f), &st) < 0) {
-#endif
-    err->assign(strerror(errno));
-    fclose(f);
-    return -errno;
-  }
-
-  // +1 is for the resize in ManifestParser::Load
-  contents->reserve(st.st_size + 1);
-
-  char buf[64 << 10];
-  size_t len;
-  while (!feof(f) && (len = fread(buf, 1, sizeof(buf), f)) > 0) {
-    contents->append(buf, len);
-  }
-  if (ferror(f)) {
-    err->assign(strerror(errno));  // XXX errno?
-    contents->clear();
-    fclose(f);
-    return -errno;
-  }
-  fclose(f);
-  return 0;
-#endif
+void readfile_write_string(void* ctx, char* data,size_t len) {
+  std::string* result_string = static_cast<std::string*>(ctx);
+  // this may not be commonly known but apparently the len here is a 
+  // maybe huge optimization on large data chunnks since rust
+  // knows exactly how long this is
+  result_string->append(data,len);
 }
+
+
+
+extern "C" {
+  void rs_read_file(const char* path,char** err,void* ctx, ReadFileCB cb);
+}
+
+
+int ReadFile(const string& path, string* contents, string* err) {
+  // I know this isnt desireable here, stack is cool but we have BIG files in mind
+  // this rust function also works on almost any os
+  // contents->reserve(64 << 10);
+  err->clear();
+  // since err str len is not known here just make it bigger
+  err->reserve(128);
+  char* c_err = nullptr;
+  rs_read_file(path.c_str(),&c_err,contents,readfile_write_string);
+  if(c_err) {
+    err->assign(c_err);
+    rs_cstring_free(c_err);
+    // dont reallly know what to return here yet but ok
+    return -1;
+  }
+  return 0;
+}
+
+// #ifdef _WIN32
+// err->clear();
+//   // This makes a ninja run on a set of 1500 manifest files about 4% faster
+//   // than using the generic fopen code below.
+//   HANDLE f = ::CreateFileA(path.c_str(), GENERIC_READ, FILE_SHARE_READ, NULL,
+//                            OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, NULL);
+//   if (f == INVALID_HANDLE_VALUE) {
+//     err->assign(GetLastErrorString());
+//     return -ENOENT;
+//   }
+
+//   for (;;) {
+//     DWORD len;
+//     char buf[64 << 10];
+//     if (!::ReadFile(f, buf, sizeof(buf), &len, NULL)) {
+//       err->assign(GetLastErrorString());
+//       contents->clear();
+//       ::CloseHandle(f);
+//       return -EIO;
+//     }
+//     if (len == 0)
+//       break;
+//     contents->append(buf, len);
+//   }
+//   ::CloseHandle(f);
+//   return 0;
+// #else
+//   FILE* f = fopen(path.c_str(), "rb");
+//   if (!f) {
+//     err->assign(strerror(errno));
+//     return -errno;
+//   }
+
+// #ifdef __USE_LARGEFILE64
+//   struct stat64 st;
+//   if (fstat64(fileno(f), &st) < 0) {
+// #else
+//   struct stat st;
+//   if (fstat(fileno(f), &st) < 0) {
+// #endif
+//     err->assign(strerror(errno));
+//     fclose(f);
+//     return -errno;
+//   }
+
+//   // +1 is for the resize in ManifestParser::Load
+//   contents->reserve(st.st_size + 1);
+
+//   char buf[64 << 10];
+//   size_t len;
+//   while (!feof(f) && (len = fread(buf, 1, sizeof(buf), f)) > 0) {
+//     contents->append(buf, len);
+//   }
+//   if (ferror(f)) {
+//     err->assign(strerror(errno));  // XXX errno?
+//     contents->clear();
+//     fclose(f);
+//     return -errno;
+//   }
+//   fclose(f);
+//   return 0;
+// #endif
+// }
 
 void SetCloseOnExec(int fd) {
 #ifndef _WIN32
@@ -595,6 +629,7 @@ bool islatinalpha(int c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 }
 
+// this comment should make build files change
 string StripAnsiEscapeCodes(const string& in) {
   string stripped;
   stripped.reserve(in.size());

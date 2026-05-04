@@ -342,15 +342,19 @@ yy20:
             *err = "inputs may not also have inputs";
             return false;
           }
+          // printf_s("depfile parser pushing input %s",piece);
           // New input.
           ins_.push_back(piece);
         } else {
           // Check for a new output.
           if (std::find(outs_.begin(), outs_.end(), piece) == outs_.end())
+            // printf_s("depfile parser pushing output %s \n",piece);
             outs_.push_back(piece);
         }
       } else if (!is_dependency) {
         // We've passed an input on the left side; reject new inputs.
+            // printf_s("depfile parser set poisoned %s",content->c_str());
+
         poisoned_input = true;
       }
     }

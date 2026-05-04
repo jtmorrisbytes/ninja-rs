@@ -1813,6 +1813,11 @@ int ReadFlags(int* argc, char*** argv,
   return -1;
 }
 
+extern "C" {
+  bool rs_chdir(const char* path);
+}
+
+
 NORETURN void real_main(int argc, char** argv) {
   // Use exit() instead of return in this function to avoid potentially
   // expensive cleanup when destructing NinjaMain.
@@ -1837,8 +1842,9 @@ NORETURN void real_main(int argc, char** argv) {
     // can be piped into a file without this string showing up.
     if (!options.tool && config.verbosity != BuildConfig::NO_STATUS_UPDATE)
       status->Info("Entering directory `%s'", options.working_dir);
-    if (chdir(options.working_dir) < 0) {
-      Fatal("chdir to '%s' - %s", options.working_dir, strerror(errno));
+      // original was if < 0
+      if (rs_chdir(options.working_dir) != 1) {
+      Fatal("chdir to '%s' - check stdout for rust print. please note that on windows paths > 260 may not work even with lpe", options.working_dir);
     }
   }
 
@@ -1905,7 +1911,8 @@ NORETURN void real_main(int argc, char** argv) {
 
 }  // anonymous namespace
 
-int main(int argc, char** argv) {
+// jordan: NO GOING BACK NOW
+extern "C" int ninja_main(int argc, char** argv) {
 #if defined(_MSC_VER)
   // Set a handler to catch crashes not caught by the __try..__except
   // block (e.g. an exception in a stack-unwind-block).

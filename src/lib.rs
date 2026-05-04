@@ -3,6 +3,7 @@ use std::{
 };
 pub mod clparser;
 pub mod includes;
+pub mod fs;
 
 const RHS_PATH_SEP_BYTE: u8 = b'/';
 const LHS_PATH_SEP_BYTE: u8 = b'\\';
@@ -17,7 +18,9 @@ static WIN_LONG_PREFIX: &str = "\\?\\";
 static WIN_SHARED_PREFIX: &str = "\\\\";
 static REL_ROOT_RHS: &str = "./";
 static RHS_PARENT_DIR_STR: &str = "../";
-static RHS_REL_ROOT: &str = ".\\";
+static LHS_PARENT_DIR_STR: &str = "../";
+
+static LHS_REL_ROOT: &str = ".\\";
 static EMPTY_STR: &str = "";
 static CUR_DIR: &str = ".";
 static PARENT_DIR: &str = "..";
@@ -69,7 +72,7 @@ fn test_sse2_collect_path_slice() {
             let ptr = ptr.clone();
             // we join at the end of the block and the compiler cannot see that the input data outlives the program
             let bytes = unsafe {std::slice::from_raw_parts(ptr.0, len)};
-            for _ in 0..250_000_000 {
+            for _ in 0..10 {
                 unsafe {std::hint::black_box(sse2_collect_path_slices(&bytes, &mut buf, false, false))};
                 buf.clear();
             }
@@ -256,7 +259,7 @@ unsafe fn sse2_collect_path_slices(
     let final_slice = unsafe { std::slice::from_raw_parts(last_slash_pos, len) };
 
     let str = std::str::from_utf8_unchecked(final_slice);
-    println!("{str}");
+    // println!("{str}");
     // ideally run the SIMD 1 more time with the correct mask to 'clean up' and find the remaining data
     let mut remaining: Vec<&str> = str
         .split(|c| c == '/' || c == '\\')
@@ -269,9 +272,9 @@ unsafe fn sse2_collect_path_slices(
 
 
 
-#[unsafe(no_mangle)]
+// #[unsafe(no_mangle)]
 // #[target_feature(enable="sse2")]
-pub unsafe extern "C" fn rs_canonicalize_path(
+pub unsafe fn rs_canonicalize_path(
     path: &str,
     output: &mut String
     // len: *mut core::ffi::c_longlong,
@@ -288,7 +291,7 @@ pub unsafe extern "C" fn rs_canonicalize_path(
     let mut prefix: &str = EMPTY_STR;
     let mut drive_letter: &str = EMPTY_STR;
     // for readability.
-    for item in [UNC_PREFIX, WIN_LONG_PREFIX, WIN_SHARED_PREFIX, RHS_REL_ROOT, REL_ROOT_RHS,LINUX_ROOT] {
+    for item in [UNC_PREFIX, WIN_LONG_PREFIX, WIN_SHARED_PREFIX, LHS_REL_ROOT, REL_ROOT_RHS,LINUX_ROOT] {
         if let Some(r) = b_current.strip_prefix(item) {
             b_current = r;
             prefix = item;
@@ -296,13 +299,13 @@ pub unsafe extern "C" fn rs_canonicalize_path(
         }
     }
     // strip ./ at the beginning using ptr_eq if possible
-    if std::ptr::eq(prefix, RHS_REL_ROOT) {
+    if std::ptr::eq(prefix, LHS_REL_ROOT) {
         prefix = EMPTY_STR;
     }
     else if std::ptr::eq(prefix, REL_ROOT_RHS) {
         prefix = EMPTY_STR;
     }
-    else if prefix == RHS_REL_ROOT {
+    else if prefix == LHS_REL_ROOT {
         prefix = EMPTY_STR;
     }
     else if prefix == REL_ROOT_RHS {
@@ -396,6 +399,7 @@ pub unsafe extern "C" fn rs_canonicalize_path3(
     let input = input.to_str().expect("invalid utf8 sequence");
     let mut output = String::with_capacity(input.len());
     unsafe { rs_canonicalize_path(input, &mut output) };
+    // println!("cannon path input {input} output {output}");
     return std::ffi::CString::new(output).unwrap().into_raw();
 }
 // const LEN: core::ffi::c_longlong = 0;
@@ -420,37 +424,53 @@ pub unsafe extern "C" fn rs_stat_single_file(
     path: *const std::ffi::c_char,
     error: *const *mut std::ffi::c_char,
 ) -> std::ffi::c_longlong {
+    // panic!("is rs_stat_single_file Dead code?");
     // println!("HELLO FROM RUST rs_stat_single_file");
     let path = unsafe { CStr::from_ptr(path) }.to_string_lossy();
     if path.starts_with("../C") {
         unsafe {
-            core::arch::asm!("int3");
+            // core::arch::asm!("int3");
+            panic!("INVALID PATH");
         }
     }
+    let metadata = match std::fs::metadata(path.as_ref()) {
+        Ok(m)=>m,
+        Err(e)=>{
+            // 4 is the default for some reason?
+            return 4;
+        }
+    };
+    #[cfg(target_os="windows")]{
 
-    let modified = match std::fs::metadata(path.as_ref()) {
-        Ok(m) => m.modified(),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            return 0;
-        }
-        Err(e) => {
-            panic!("StatSingleFile {e}")
-        }
-    };
-    let time_since_epoch = match modified {
-        Err(e) => {
-            eprintln!("failed to get lastwritetime {e}");
-            return -1;
-        }
-        Ok(system_time) => system_time.duration_since(std::time::UNIX_EPOCH),
-    };
-    match time_since_epoch {
-        Err(e) => {
-            eprintln!("Failed to get time since unix epoch {e}");
-            return -1;
-        }
-        Ok(time) => return time.as_nanos().try_into().unwrap(),
+                use std::os::windows::fs::MetadataExt;
+                return timestamp_from_win32_mfiletime(metadata.last_write_time());
     }
+    #[cfg(not(target_os="windows"))] {
+        compile_error!("TODO: Statsinglefile on non windows");
+    }
+    // let modified = match std::fs::metadata(path.as_ref()) {
+    //     Ok(m) => m.modified(),
+    //     Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    //         return 0;
+    //     }
+    //     Err(e) => {
+    //         panic!("StatSingleFile {e}")
+    //     }
+    // };
+    // let time_since_epoch = match modified {
+    //     Err(e) => {
+    //         eprintln!("failed to get lastwritetime {e}");
+    //         return -1;
+    //     }
+    //     Ok(system_time) => system_time.duration_since(std::time::UNIX_EPOCH),
+    // };
+    // match time_since_epoch {
+    //     Err(e) => {
+    //         eprintln!("Failed to get time since unix epoch {e}");
+    //         return -1;
+    //     }
+    //     Ok(time) => return time.as_nanos().try_into().unwrap(),
+    // }
 
     //       printf_s("StatSingleFile %s\n",path.c_str());
     //   WIN32_FILE_ATTRIBUTE_DATA attrs;
@@ -492,6 +512,51 @@ pub unsafe extern "C" fn rs_stat_single_file(
     // panic!("this works")
     // return -1;
 }
+
+#[cfg(target_os = "windows")]
+fn timestamp_from_win32_mfiletime(filetime_ticks: u64) -> std::ffi::c_longlong {
+    // 12622770400 * (1_000_000_000 / 100) == seconds * 10_000_000 (100ns ticks)
+    const EPOCH_DIFF_TICKS: u64 = 12_622_770_400 * 10_000_000;
+
+    // Do subtraction in u64 space (matches C++ behavior)
+    let shifted = filetime_ticks - EPOCH_DIFF_TICKS;
+
+    // Then cast to signed (like (TimeStamp)mtime in C++)
+    shifted as _
+}
+
+
+
+
+
+// #[cfg(target_os="windows")]
+// fn filetime_to_duration_since_2000(ft: &FILETIME) -> Duration {
+//     use std::time::Duration;
+//     use windows::Win32::Foundation::FILETIME;
+//     // Combine high/low into u64
+//     let ticks = ((ft.dwHighDateTime as u64) << 32) | (ft.dwLowDateTime as u64);
+
+//     // FILETIME is in 100ns units → convert to nanoseconds
+//     let nanos = ticks * 100;
+
+//     // Seconds between 1601 and 2000
+//     const EPOCH_DIFF_SECS: u64 = 12_622_770_400;
+
+//     let epoch_diff = Duration::from_secs(EPOCH_DIFF_SECS);
+
+//     // Convert nanos to Duration
+//     let filetime_duration = Duration::from_nanos(nanos);
+
+//     // Subtract epoch difference
+//     filetime_duration
+//         .checked_sub(epoch_diff)
+//         .unwrap_or(Duration::ZERO)
+// }
+
+
+
+
+
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rs_stat_all_files_in_dir(
     dir: *const c_char,
@@ -527,17 +592,18 @@ pub unsafe extern "C" fn rs_stat_all_files_in_dir(
             continue;
         }
         let metadata = metadata.unwrap();
-        let write_time = metadata.modified();
-        if write_time.is_err() {
-            continue;
-        }
-        let write_time = unsafe { write_time.unwrap_unchecked() };
-        let since_epoch = write_time.duration_since(UNIX_EPOCH);
-        if since_epoch.is_err() {
-            continue;
-        }
-        let since_epoch = since_epoch.unwrap();
-        let mtime = since_epoch.as_nanos().try_into().unwrap();
+        let mtime = {
+
+            #[cfg(target_os="windows")] {
+                use std::os::windows::fs::MetadataExt;
+                timestamp_from_win32_mfiletime(metadata.last_write_time())
+            }
+            #[cfg(target_os="linux")] {
+                compile_error!("TODO HANDLE MTIME");
+            }
+        };
+        // let since_epoch = since_epoch.unwrap();
+        // let mtime = since_epoch.as_nanos().try_into().unwrap();
         let n = entry.file_name();
         let f = n.to_string_lossy();
         let c = std::ffi::CString::from_str(&f);
