@@ -174,6 +174,7 @@ fn main() {
 
     for file in src_paths.iter() {
         build.file(file);
+        // make sure cargo knows to watch these files
         println!("cargo:rerun-if-changed={file}");
     }
     // scan the out_dir
