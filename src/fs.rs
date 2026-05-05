@@ -1,3 +1,5 @@
+#[cfg(target_os = "windows")]
+use std::path::PathBuf;
 use std::{
     arch::asm,
     ffi::{CStr, CString, c_char, c_longlong},
@@ -5,7 +7,6 @@ use std::{
     os::raw::c_void,
     path::Path,
     ptr::NonNull,
-    str::FromStr,
 };
 
 thread_local! {
@@ -27,7 +28,7 @@ thread_local! {
 
 // the caller must ensure that NonNull is upheld for raw performance. any of those ptrs CANNOT BE NULL
 // err is not nonnull here yet because it may be init to null
-pub fn read_file(mut path: &str, mut cb: impl FnMut(&mut Vec<u8>,usize)) -> Result<(), String> {
+pub fn read_file(path: &str, mut cb: impl FnMut(&mut Vec<u8>, usize)) -> Result<(), String> {
     // I decided to use canonicalize here because it handles \\?\\ on windows for the operating system
     // I will perf test this eventually, but the goal is to see how rust allows us to build skia on windows
     // if neccesary I will also test prepending with \\?\\ for long paths
@@ -35,7 +36,7 @@ pub fn read_file(mut path: &str, mut cb: impl FnMut(&mut Vec<u8>,usize)) -> Resu
     #[cfg(windows)]
     {
         // attempt to smartly call ntdll if able
-        if !unsafe{is_long_path_aware_runtime()} {
+        if !unsafe { is_long_path_aware_runtime() } {
             unsafe { rs_absolute_path_win32_ntdll(&path) };
             WIN32_FS_CHDIR.with_borrow(|buf| {
                 let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
@@ -74,29 +75,29 @@ pub fn read_file(mut path: &str, mut cb: impl FnMut(&mut Vec<u8>,usize)) -> Resu
     READ_BUF.with(|cell| {
         let mut buf = cell.borrow_mut();
         let cap = buf.capacity();
-        unsafe {buf.set_len(cap)};
+        unsafe { buf.set_len(cap) };
         // buf.fill(u8::MAX);
         loop {
             let r = file.read(&mut buf);
             // unsafe {buf.set_len(cap);}
             let bytes_read = match r {
-                Ok(bytes_read)=>{bytes_read}
+                Ok(bytes_read) => bytes_read,
                 Err(e) => {
                     println!("ReadFile failed to read chunk because {e}");
                     0
                 }
             };
-            let dump_pos = buf.iter().position(|&b| b == 0xFF).unwrap_or(bytes_read);
+            // let dump_pos = buf.iter().position(|&b| b == 0xFF).unwrap_or(bytes_read);
             // unsafe {buf.set_len(bytes_read);}
             // println!("CHUNK {bytes_read}",);
             // hexdump_colon_highlight(&buf[0..dump_pos]);
-            
-            cb(&mut buf,bytes_read);
-            if bytes_read == 0 {
-                break ;
-            }
 
-        }});
+            cb(&mut buf, bytes_read);
+            if bytes_read == 0 {
+                break;
+            }
+        }
+    });
 
     Ok(())
 }
@@ -108,7 +109,7 @@ pub unsafe extern "C" fn rs_read_file(
     cb: unsafe extern "C" fn(NonNull<c_void>, NonNull<c_char>, c_longlong),
 ) {
     let path = unsafe { CStr::from_ptr(path.as_ptr() as *const _) };
-    let mut path_str = match path.to_str() {
+    let path_str = match path.to_str() {
         Ok(p) => p,
         Err(e) => {
             if err.is_null() {
@@ -131,7 +132,7 @@ pub unsafe extern "C" fn rs_read_file(
         }
     }.to_string();
 
-    let r = read_file(&path_str, |data,len| {
+    let r = read_file(&path_str, |data, len| {
         // rust must produce valid bytes here or all hell will break loose
         // not sure if rust will push zero here or not
         // data.push(0);
@@ -174,24 +175,25 @@ unsafe extern "system" {
     ) -> u32;
     fn RtlGetCurrentDirectory_U(BufferLength: u32, Buffer: *mut u16) -> u32;
     // Note: The 'str' version of the API takes the struct by pointer
-    fn RtlGetFullPathName_Ustr(
-        FileName: *const windows::Win32::Foundation::UNICODE_STRING,
-        StaticString: *mut windows::Win32::Foundation::UNICODE_STRING, // Optional internal buffer
-        DynamicString: *mut windows::Win32::Foundation::UNICODE_STRING, // The one we want
-        StringInDynamicString: *mut bool,
-        FilePartPrefixCch: *mut u32,
-        FileNameUsage: *mut u32,
-    ) -> i32; // Returns length in bytes
+    // fn RtlGetFullPathName_Ustr(
+    //     FileName: *const windows::Win32::Foundation::UNICODE_STRING,
+    //     StaticString: *mut windows::Win32::Foundation::UNICODE_STRING, // Optional internal buffer
+    //     DynamicString: *mut windows::Win32::Foundation::UNICODE_STRING, // The one we want
+    //     StringInDynamicString: *mut bool,
+    //     FilePartPrefixCch: *mut u32,
+    //     FileNameUsage: *mut u32,
+    // ) -> i32; // Returns length in bytes
     pub fn RtlAreLongPathsEnabled() -> bool;
 }
-type RtlAreLongPathsEnabledFn = unsafe extern "system" fn() -> bool;
+#[cfg(windows)]
+// type RtlAreLongPathsEnabledFn = unsafe extern "system" fn() -> bool;
 #[cfg(windows)]
 pub unsafe extern "C" fn is_long_path_aware_runtime() -> bool {
     unsafe {
         // 1. Get a handle to ntdll.dll (already loaded in your process)
 
-        use windows::core::PCSTR;
-        use windows::{Win32::System::LibraryLoader::GetModuleHandleA, core::PCWSTR};
+        // use windows::core::PCSTR;
+        use windows::{Win32::System::LibraryLoader::GetModuleHandleA};
         if let Ok(h_ntdll) = GetModuleHandleA(windows::core::s!("ntdll.dll")) {
             // 2. Find the address of the "Long Path Aware" check
 
@@ -211,7 +213,7 @@ pub unsafe extern "C" fn is_long_path_aware_runtime() -> bool {
     }
 }
 #[cfg(target_os = "windows")]
-pub unsafe fn rs_absolute_path_win32_ntdll(path: &str) {
+pub unsafe fn rs_absolute_path_win32_ntdll(path: &str) -> PathBuf {
     use std::os::windows::ffi::OsStrExt;
 
     let wide_input: Vec<u16> = std::ffi::OsStr::new(path)
@@ -222,7 +224,7 @@ pub unsafe fn rs_absolute_path_win32_ntdll(path: &str) {
     // 2. Allocate a "Long Path" buffer (NT limit is ~32,767 chars)
     // let mut buffer = vec![0u16; 32768];
     let mut file_part: *mut u16 = std::ptr::null_mut();
-    WIN32_FS_CHDIR.with_borrow_mut(|buffer| {
+    let s = WIN32_FS_CHDIR.with_borrow_mut(|buffer| {
         buffer.clear();
         unsafe {
             // 3. Call the NT Native engine
@@ -237,8 +239,11 @@ pub unsafe fn rs_absolute_path_win32_ntdll(path: &str) {
             }
             buffer.set_len(bytes_needed as _);
             // Return the raw wide string for direct API calls
+            String::from_utf16(buffer.as_ref()).expect("ninja: fatal bad string data during rs_absolute_path_win32_ntdll")
         }
+        
     });
+    Path::new(&s).to_path_buf()
 }
 /// asks the NT subsystem what it believes the current directory is
 /// attempts to bypass the win32 subsystem in case it has MAX PATH checks
@@ -322,8 +327,11 @@ pub unsafe extern "C" fn rs_chdir(path: NonNull<c_char>) -> bool {
     let mut pb = std::path::Path::new(path).to_owned();
     #[cfg(target_os = "windows")]
     {
-        if !is_long_path_aware_runtime() {
-            println!("WARN: Not path aware, may fail for {}",pb.display());
+        let is_long_path_aware = unsafe {
+            is_long_path_aware_runtime()
+        };
+        if !is_long_path_aware {
+            println!("WARN: Not path aware, may fail for {}", pb.display());
         }
         // this path was chosen to attempt to bypass the windows api limitations. may or may not be permanent,
         // but the real issues is that the PEB cannot hold long file paths
@@ -349,15 +357,19 @@ pub unsafe extern "C" fn rs_chdir(path: NonNull<c_char>) -> bool {
             }
         };
     }
-    #[cfg(windows)] {
-        if !is_long_path_aware_runtime() {
-            println!("CHDIR: WARN: Not path aware, may fail for {}",pb.display())
+    #[cfg(windows)]
+    {
+        let is_long_path_aware = unsafe {
+            is_long_path_aware_runtime()
+        };
+        if !is_long_path_aware {
+            println!("CHDIR: WARN: Not path aware, may fail for {}", pb.display())
         }
     }
     match std::env::set_current_dir(&pb) {
         Ok(_) => return true,
         Err(e) => {
-            println!("Chdir failed to change directory. trying for long paths if available");
+            println!("Chdir failed to change directory because {e}. trying for long paths if available");
         }
     }
     #[cfg(target_os = "windows")]
@@ -374,13 +386,13 @@ pub unsafe extern "C" fn rs_chdir(path: NonNull<c_char>) -> bool {
 #[test]
 #[cfg(target_os = "windows")]
 pub fn test_win32_chdir_long() {
-    if !unsafe{is_long_path_aware_runtime()} {
+    if !unsafe { is_long_path_aware_runtime() } {
         panic!("the exe must be long path aware to run this test");
     }
     // let mut args = std::env::args();
     // let _ = args.next();
     // let n = args.next().unwrap();
-    let mut limit = 30;
+    let limit = 30;
     // if n == "chdirlonglimit" {
     //     limit = args.next().unwrap_or("20".to_string()).parse().unwrap();
     // }
@@ -397,7 +409,7 @@ pub fn test_win32_chdir_long() {
     println!("ntdll current dir {}", rs_getcwd_ntdll());
 
     let p = c"../ABC1234567890ABC123/ABC1234567890ABC123";
-    let p = unsafe { unsafe { NonNull::new_unchecked(p.as_ptr() as *mut _) } };
+    let p = unsafe { NonNull::new_unchecked(p.as_ptr() as *mut _) };
     let b = unsafe { rs_chdir(p) };
     assert_eq!(b, true);
     let cur_dir = std::env::current_dir().unwrap();
@@ -463,7 +475,7 @@ pub unsafe fn dump_peb_table() {
 
     // 2. Dump the first 64 bytes
     for i in (0..64).step_by(8) {
-        let chunk = std::slice::from_raw_parts(peb_ptr.add(i), 8);
+        let chunk = unsafe {std::slice::from_raw_parts(peb_ptr.add(i), 8)};
 
         // Hex part
         let hex = chunk
@@ -487,11 +499,11 @@ pub unsafe fn dump_process_parameters() {
     let peb_ptr: usize;
 
     // 1. Snatch the PEB address again
-    asm!("mov {}, gs:[0x60]", out(reg) peb_ptr);
+    unsafe {asm!("mov {}, gs:[0x60]", out(reg) peb_ptr)};
 
     // 2. Read the pointer at PEB + 0x20 (ProcessParameters)
     // We cast to *const usize to read the 8-byte address stored there
-    let proc_params_ptr = *((peb_ptr + 0x20) as *const usize) as *const u8;
+    let proc_params_ptr = unsafe {*((peb_ptr + 0x20) as *const usize) as *const u8};
 
     println!(
         "--- PEB -> ProcessParameters (0x{:X}) ---",
@@ -505,7 +517,7 @@ pub unsafe fn dump_process_parameters() {
     for i in (0..128).step_by(8) {
         let chunk = unsafe {
             std::slice::from_raw_parts(proc_params_ptr.add(i), 8)
-            // testing123  
+            // testing123
         };
 
         let hex = chunk
@@ -525,7 +537,7 @@ pub unsafe fn dump_process_parameters() {
 
 #[test]
 pub fn test_dump_peb_table() {
-    let has_long_paths = unsafe{is_long_path_aware_runtime()};
+    let has_long_paths = unsafe { is_long_path_aware_runtime() };
     println!("Process has long paths enabled: {has_long_paths}");
     unsafe {
         dump_peb_table();
@@ -538,7 +550,7 @@ pub fn test_dump_peb_table() {
 use std::fs::File;
 use std::io::{BufWriter, Write};
 // use std::path::Path;
-
+#[allow(unused)]
 fn generate_64kb_random_file<P: AsRef<Path>>(path: P) -> std::io::Result<Vec<u8>> {
     const FILE_SIZE: usize = 64 * 1024 * 2; // 64KB
     let mut buffer = vec![0u8; FILE_SIZE];
@@ -570,8 +582,8 @@ fn generate_64kb_random_file<P: AsRef<Path>>(path: P) -> std::io::Result<Vec<u8>
 
 #[cfg(windows)]
 #[test]
-pub fn test_fs_CRUD_longpath() {
-    assert_eq!(unsafe{is_long_path_aware_runtime()}, true);
+pub fn test_fs_crud_longpath() {
+    assert_eq!(unsafe { is_long_path_aware_runtime() }, true);
     let input = create_essay_sized_directory(50);
     std::fs::create_dir_all(&input).unwrap();
     let path = std::ffi::CString::new(input.as_bytes()).unwrap();
@@ -594,10 +606,11 @@ pub fn test_fs_CRUD_longpath() {
     assert_eq!(input_buf, stdlib_readbuf);
     let mut rs_read_buf = Vec::with_capacity(64 << 10);
     let path = current_dir.join(FILENAME);
-    read_file(path.to_str().unwrap(), |vec,len|{
+    read_file(path.to_str().unwrap(), |vec, _len| {
         rs_read_buf.append(&mut *vec);
-    }).unwrap();
-    assert_eq!(rs_read_buf,input_buf);
+    })
+    .unwrap();
+    assert_eq!(rs_read_buf, input_buf);
 
     std::fs::remove_file(current_dir.join(FILENAME)).unwrap();
 }
@@ -650,7 +663,7 @@ pub fn hexdump(buf: &[u8]) {
     }
 }
 fn term_width() -> Option<usize> {
-    use terminal_size::{terminal_size, Width};
+    use terminal_size::{Width, terminal_size};
 
     terminal_size().map(|(Width(w), _)| w.saturating_sub(10) as usize)
 }
@@ -703,37 +716,34 @@ pub fn hexdump_colon_highlight(buf: &[u8]) {
     }
 }
 
-
-    #[test]
-    fn spawn_with_very_long_absolute_path() {
-        // Build a very long path like:
-        // \\?\C:\temp\aaaa...\aaaa\tool.exe
-        assert_eq!(unsafe{is_long_path_aware_runtime()},true);
-        let mut path = String::from(r"\\?\C:\temp");
-        // Make it absurdly long
-        for _ in 0..200 {
-            path.push_str(r"\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-        }
-        std::fs::create_dir_all(&path).unwrap();
-        unsafe {rs_chdir_ntdll_longpath(&path)};
-        path.push_str(r"\tool.exe");
-
-        println!("Attempting to spawn:\n{}", path);
-        println!("Length: {}", path.len());
-
-        let result = std::process::Command::new(&path)
-            .arg("test")
-            .spawn();
-
-        match result {
-            Ok(child) => {
-                println!("Spawn succeeded unexpectedly: {:?}", child);
-            }
-            Err(e) => {
-                println!("Spawn failed as expected: {}", e);
-            }
-        }
-
-        // Don't assert success—we just want to observe behavior
-        assert!(true);
+#[test]
+fn spawn_with_very_long_absolute_path() {
+    // Build a very long path like:
+    // \\?\C:\temp\aaaa...\aaaa\tool.exe
+    assert_eq!(unsafe { is_long_path_aware_runtime() }, true);
+    let mut path = String::from(r"\\?\C:\temp");
+    // Make it absurdly long
+    for _ in 0..200 {
+        path.push_str(r"\aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     }
+    std::fs::create_dir_all(&path).unwrap();
+    unsafe { rs_chdir_ntdll_longpath(&path) };
+    path.push_str(r"\tool.exe");
+
+    println!("Attempting to spawn:\n{}", path);
+    println!("Length: {}", path.len());
+
+    let result = std::process::Command::new(&path).arg("test").spawn();
+
+    match result {
+        Ok(child) => {
+            println!("Spawn succeeded unexpectedly: {:?}", child);
+        }
+        Err(e) => {
+            println!("Spawn failed as expected: {}", e);
+        }
+    }
+
+    // Don't assert success—we just want to observe behavior
+    assert!(true);
+}

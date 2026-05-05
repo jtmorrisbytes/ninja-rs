@@ -1,31 +1,38 @@
+#![deny(warnings)]
 use std::{
-    cell::RefCell, ffi::{CStr, CString, OsStr, c_char, c_longlong, c_void}, io::Write, iter::{self, Peekable}, path::{Component, Path, PathBuf}, str::FromStr, time::UNIX_EPOCH
+    cell::RefCell,
+    ffi::{CStr, CString, c_char, c_longlong, c_void},
+    io::Write,
+    path::{Component},
 };
+pub mod build;
 pub mod clparser;
-pub mod includes;
+pub mod ninja;
 pub mod fs;
-
+pub mod includes;
+pub mod subprocess;
+pub mod status;
+pub mod build_log;
 const RHS_PATH_SEP_BYTE: u8 = b'/';
 const LHS_PATH_SEP_BYTE: u8 = b'\\';
 thread_local! {
     // Each thread gets its own pre-allocated 'High Water Mark' vector
     static CANNON_SEGMENT_CACHE: RefCell<Vec<&'static str>> = RefCell::new(Vec::with_capacity(4096));
 }
-static LHS_PATH_SEP_STR:&str = "\\";
-static RHS_PATH_SEP_STR:&str = "/";
+// static LHS_PATH_SEP_STR: &str = "\\";
+static RHS_PATH_SEP_STR: &str = "/";
 static UNC_PREFIX: &str = "\\?\\UNC\\";
 static WIN_LONG_PREFIX: &str = "\\?\\";
 static WIN_SHARED_PREFIX: &str = "\\\\";
 static REL_ROOT_RHS: &str = "./";
 static RHS_PARENT_DIR_STR: &str = "../";
-static LHS_PARENT_DIR_STR: &str = "../";
+// static LHS_PARENT_DIR_STR: &str = "..\\";
 
 static LHS_REL_ROOT: &str = ".\\";
 static EMPTY_STR: &str = "";
 static CUR_DIR: &str = ".";
 static PARENT_DIR: &str = "..";
 static LINUX_ROOT: &str = RHS_PATH_SEP_STR;
-
 
 #[cfg(test)]
 fn generate_max_windows_path() -> String {
@@ -61,24 +68,25 @@ fn test_sse2_collect_path_slice() {
     let len = three_two_k_challenge.as_bytes().len();
     let ptr = three_two_k_challenge.as_bytes().as_ptr();
     // this benchmark smuggles a pointer where I KNOW ITS SAFE
-    #[derive(Clone,Copy)]
-    struct ptrguard(*const u8);
-    let ptr = ptrguard(ptr);
-    unsafe  impl Send for ptrguard{}
+    #[derive(Clone, Copy)]
+    struct Ptrguard(*const u8);
+    let ptr = Ptrguard(ptr);
+    unsafe impl Send for Ptrguard {}
 
     for _ in 0..6 {
         let handle = std::thread::spawn(move || {
             let mut buf = Vec::with_capacity(5000);
             let ptr = ptr.clone();
             // we join at the end of the block and the compiler cannot see that the input data outlives the program
-            let bytes = unsafe {std::slice::from_raw_parts(ptr.0, len)};
+            let bytes = unsafe { std::slice::from_raw_parts(ptr.0, len) };
             for _ in 0..10 {
-                unsafe {std::hint::black_box(sse2_collect_path_slices(&bytes, &mut buf, false, false))};
+                unsafe {
+                    std::hint::black_box(sse2_collect_path_slices(&bytes, &mut buf, false, false))
+                };
                 buf.clear();
             }
         });
         handles.push(handle);
-        
     }
     for h in handles {
         let _ = h.join().ok();
@@ -95,10 +103,10 @@ unsafe fn sse2_collect_path_slices(
     include_slashes: bool,
     include_empty_segments: bool,
 ) {
+    #[cfg(all(not(target_arch = "x86_64"), target_arch = "x86"))]
+    use core::arch::x86::{self, __m128i, *};
     #[cfg(target_arch = "x86_64")]
-    use core::arch::x86_64::{self,*,__m128i};
-    #[cfg(all(not(target_arch="x86_64"),target_arch = "x86"))]
-    use core::arch::x86::{self,*,__m128i};
+    use core::arch::x86_64::{__m128i};
     use std::{mem::MaybeUninit, ops::Add};
 
     const SSE2_REG_BYTE_SIZE: usize = 16;
@@ -152,7 +160,7 @@ unsafe fn sse2_collect_path_slices(
     // println!("sse2_count {sse2_count} input len {}",bytes.len());
     // let sse2_remainder = bytes.len() % SSE2_REG_BYTE_SIZE;
     let base_address = bytes.as_ptr();
-    let mut chunk_address = bytes.as_ptr();
+    let mut chunk_address;
     let mut component_base_address = bytes.as_ptr();
     let mut mask: u16 = 0;
     // this allows us to 'collect' 4 iterations
@@ -170,59 +178,59 @@ unsafe fn sse2_collect_path_slices(
         unsafe {
             // ofc we needed inline asm here because we are using maybeuniti
             core::arch::asm!(
-                "movdqu xmm1, [{0}]",    // 1. Load 16 bytes of path data
-                "movdqa xmm2, xmm1",       // 2. Only ONE copy of the data is needed
-                "pcmpeqb xmm1, xmm0",      // 3. xmm1 = mask for '/' (xmm1 is now clobbered)
-                "pcmpeqb xmm2, xmm5",      // 4. xmm2 = mask for '\' (xmm2 is now clobbered)
-                "por xmm1, xmm2",          // 5. Merge the results (OR them together)
-                "pmovmskb {1:e}, xmm1", 
+              "movdqu xmm1, [{0}]",    // 1. Load 16 bytes of path data
+              "movdqa xmm2, xmm1",       // 2. Only ONE copy of the data is needed
+              "pcmpeqb xmm1, xmm0",      // 3. xmm1 = mask for '/' (xmm1 is now clobbered)
+              "pcmpeqb xmm2, xmm5",      // 4. xmm2 = mask for '\' (xmm2 is now clobbered)
+              "por xmm1, xmm2",          // 5. Merge the results (OR them together)
+              "pmovmskb {1:e}, xmm1",
 
 
 
 
-                //   // load data from effecetive address into xmm4 (chunk)
-                //   "movdqu xmm4, [{0}]",
-                //   // we may compare xmm4 twice so copy xmm4 to right slash results or xmm1
-                //   "movdqa xmm1, xmm4",
-                //   // compare xmm1 (results) to xmm0 (mask or slash)
-                //   "pcmpeqb xmm1, xmm0",
-                //   // copy xmm4 into xmm2 (left slash results)
-                //   "movdqa xmm2, xmm4",
-                //   // compare xmm2 (results) to xmm0 (mask or slash)
-                //   "pcmpeqb xmm2, xmm5",
+              //   // load data from effecetive address into xmm4 (chunk)
+              //   "movdqu xmm4, [{0}]",
+              //   // we may compare xmm4 twice so copy xmm4 to right slash results or xmm1
+              //   "movdqa xmm1, xmm4",
+              //   // compare xmm1 (results) to xmm0 (mask or slash)
+              //   "pcmpeqb xmm1, xmm0",
+              //   // copy xmm4 into xmm2 (left slash results)
+              //   "movdqa xmm2, xmm4",
+              //   // compare xmm2 (results) to xmm0 (mask or slash)
+              //   "pcmpeqb xmm2, xmm5",
 
-                //   // copy xmm1 to xmm3
-                //   "movdqa xmm3, xmm1",
-                //   // now we need to collect both xmm1 and xmm2 together,
-                //   "por xmm3,xmm2",
-                //   // now xmm3 should contain the mask for all slashes, we need to turn this into a mask
-                //   "pmovmskb {1:e}, xmm3",
+              //   // copy xmm1 to xmm3
+              //   "movdqa xmm3, xmm1",
+              //   // now we need to collect both xmm1 and xmm2 together,
+              //   "por xmm3,xmm2",
+              //   // now xmm3 should contain the mask for all slashes, we need to turn this into a mask
+              //   "pmovmskb {1:e}, xmm3",
 
-                  // maybe do the shuffle logic here
-                //   "mov eax, {1:e}",
-                //   "mov {scratch},{count}",
-                //   "and {scratch}, 3",
-                //   "shl {scratch}, 4",
-                //   "shlx {rax}, {rax}, {scratch}",
-                //   "or {acc}, {rax}",
+                // maybe do the shuffle logic here
+              //   "mov eax, {1:e}",
+              //   "mov {scratch},{count}",
+              //   "and {scratch}, 3",
+              //   "shl {scratch}, 4",
+              //   "shlx {rax}, {rax}, {scratch}",
+              //   "or {acc}, {rax}",
 
-                  in(reg) chunk_address,
-                  inout(reg) mask,
-                //   acc = inout(reg) mask_acc,
-                //   count = in(reg) count,
-                  // in(reg) sliding_index,
-                  inout("xmm0") rhs_slash_template,
-                  inout("xmm1") right_slash_results,
-                  inout("xmm2") left_slash_results,
-                  inout("xmm3") combined_slash_results,
-                //   inout("xmm4") chunk,
-                  inout("xmm5") lhs_slash_template,
-                  options(nostack)
-              );
+                in(reg) chunk_address,
+                inout(reg) mask,
+              //   acc = inout(reg) mask_acc,
+              //   count = in(reg) count,
+                // in(reg) sliding_index,
+                inout("xmm0") rhs_slash_template,
+                inout("xmm1") right_slash_results,
+                inout("xmm2") left_slash_results,
+                inout("xmm3") combined_slash_results,
+              //   inout("xmm4") chunk,
+                inout("xmm5") lhs_slash_template,
+                options(nostack)
+            );
             #[cfg(target_pointer_width = "64")]
             const CHUNKS_PER_ACC: usize = 4; // 4 chunks * 16 bytes = 64 bits
             #[cfg(target_pointer_width = "32")]
-            const CHUNKS_PER_ACC: usize = 2; 
+            const CHUNKS_PER_ACC: usize = 2;
             // let raw_mask=u64::from(mask);
             // let mask_shift = ;
             mask_acc |= (mask as usize) << (count % CHUNKS_PER_ACC * 16);
@@ -238,8 +246,8 @@ unsafe fn sse2_collect_path_slices(
                         .saturating_sub(last_slash_pos.addr())
                         .add(include_slashes as usize);
                     // let byte_idx = absolute_idx.read_unaligned();
-                    let slice = unsafe { std::slice::from_raw_parts(last_slash_pos, len) };
-                    let str = unsafe { std::str::from_utf8_unchecked(slice) };
+                    let slice =  std::slice::from_raw_parts(last_slash_pos, len);
+                    let str = std::str::from_utf8_unchecked(slice);
                     if len > 0 {
                         output.push(str);
                     } else if include_empty_segments {
@@ -253,32 +261,30 @@ unsafe fn sse2_collect_path_slices(
             }
         }
     }
-    let final_address = base_address.add(bytes.len());
-    let len = (final_address.offset_from(last_slash_pos) as usize);
-    // println!("{final_address:p} len {len}");
-    let final_slice = unsafe { std::slice::from_raw_parts(last_slash_pos, len) };
+    unsafe {
 
-    let str = std::str::from_utf8_unchecked(final_slice);
-    // println!("{str}");
-    // ideally run the SIMD 1 more time with the correct mask to 'clean up' and find the remaining data
-    let mut remaining: Vec<&str> = str
+        let final_address = base_address.add(bytes.len());
+        let len = final_address.offset_from(last_slash_pos) as usize;
+        // println!("{final_address:p} len {len}");
+        let final_slice = std::slice::from_raw_parts(last_slash_pos, len);
+        
+        let str = std::str::from_utf8_unchecked(final_slice);
+        // println!("{str}");
+        // ideally run the SIMD 1 more time with the correct mask to 'clean up' and find the remaining data
+        let mut remaining: Vec<&str> = str
         .split(|c| c == '/' || c == '\\')
         .filter(|seg| !seg.is_empty()) // Optional: ignores "//"
         .collect();
     output.append(&mut remaining);
 }
-
-
-
-
+}
 
 // #[unsafe(no_mangle)]
 // #[target_feature(enable="sse2")]
 pub unsafe fn rs_canonicalize_path(
     path: &str,
-    output: &mut String
-    // len: *mut core::ffi::c_longlong,
-){
+    output: &mut String, // len: *mut core::ffi::c_longlong,
+) {
     if path.len() == 0 {
         return;
     }
@@ -291,7 +297,14 @@ pub unsafe fn rs_canonicalize_path(
     let mut prefix: &str = EMPTY_STR;
     let mut drive_letter: &str = EMPTY_STR;
     // for readability.
-    for item in [UNC_PREFIX, WIN_LONG_PREFIX, WIN_SHARED_PREFIX, LHS_REL_ROOT, REL_ROOT_RHS,LINUX_ROOT] {
+    for item in [
+        UNC_PREFIX,
+        WIN_LONG_PREFIX,
+        WIN_SHARED_PREFIX,
+        LHS_REL_ROOT,
+        REL_ROOT_RHS,
+        LINUX_ROOT,
+    ] {
         if let Some(r) = b_current.strip_prefix(item) {
             b_current = r;
             prefix = item;
@@ -301,20 +314,17 @@ pub unsafe fn rs_canonicalize_path(
     // strip ./ at the beginning using ptr_eq if possible
     if std::ptr::eq(prefix, LHS_REL_ROOT) {
         prefix = EMPTY_STR;
-    }
-    else if std::ptr::eq(prefix, REL_ROOT_RHS) {
+    } else if std::ptr::eq(prefix, REL_ROOT_RHS) {
         prefix = EMPTY_STR;
-    }
-    else if prefix == LHS_REL_ROOT {
+    } else if prefix == LHS_REL_ROOT {
         prefix = EMPTY_STR;
-    }
-    else if prefix == REL_ROOT_RHS {
+    } else if prefix == REL_ROOT_RHS {
         prefix = EMPTY_STR
-    } 
+    }
     // drive letter detection. matches any prefix above then drive letter (shrug) i guess
     let chars = b_current.as_bytes();
     match (chars.get(0), chars.get(1)) {
-        (Some(b'a'..b'z' | b'A'..b'Z'), Some(b':')) => {
+        (Some(b'a'..=b'z' | b'A'..=b'Z'), Some(b':')) => {
             if let Some(s) = b_current.get(2..) {
                 drive_letter = &path[0..=1];
                 b_current = s;
@@ -326,22 +336,24 @@ pub unsafe fn rs_canonicalize_path(
     let components = CANNON_SEGMENT_CACHE.with(|cache| {
         let mut vec = cache.borrow_mut();
         vec.clear();
-         unsafe {sse2_collect_path_slices(b_current.as_bytes(), &mut vec, false, false)};
-         unsafe {std::slice::from_raw_parts(vec.as_ptr(), vec.len())}
+        unsafe { sse2_collect_path_slices(b_current.as_bytes(), &mut vec, false, false) };
+        unsafe { std::slice::from_raw_parts(vec.as_ptr(), vec.len()) }
     });
     // we stripped the prefix, so if there were no slashes just return the input
     if components.len() == 0 {
         output.push_str(path);
         return;
-    }
-    else if components.len() == 1  && components[0] != PARENT_DIR{
-
+    } else if components.len() == 1 && components[0] != PARENT_DIR {
         output.push_str(prefix);
         output.push_str(&components[0]);
         return;
     }
-    let components: Vec<_> = components.iter().filter(|c| **c != CUR_DIR).map(|s|*s).collect();
-    let has_relative = components.iter().find(|s| **s == PARENT_DIR).map(|s|*s);
+    let components: Vec<_> = components
+        .iter()
+        .filter(|c| **c != CUR_DIR)
+        .map(|s| *s)
+        .collect();
+    let has_relative = components.iter().find(|s| **s == PARENT_DIR).map(|s| *s);
     if has_relative.is_none() {
         output.push_str(prefix);
         output.push_str(drive_letter);
@@ -354,11 +366,10 @@ pub unsafe fn rs_canonicalize_path(
         return;
     }
 
-
     // skip over leading .. as per the algo
     let mut relative_root = 0;
     while components.get(relative_root) == Some(&PARENT_DIR) {
-        relative_root+= 1;
+        relative_root += 1;
     }
     let resolved_after_relative = &components[relative_root..];
     // this means the input was only ../../../ so it doesnt matter
@@ -366,15 +377,15 @@ pub unsafe fn rs_canonicalize_path(
         output.push_str(prefix);
         output.push_str(drive_letter);
         output.push_str(&components.join(RHS_PATH_SEP_STR));
-        return; 
+        return;
     }
     let mut relative_output: Vec<_> = Vec::with_capacity(components.len());
     for segment in resolved_after_relative {
         match segment {
-            &".." if !relative_output.is_empty() =>{
+            &".." if !relative_output.is_empty() => {
                 relative_output.pop();
             }
-            _=> {relative_output.push(segment)}
+            _ => relative_output.push(segment),
         }
     }
     // next we stitch together the prefix if there is one (todo)
@@ -383,9 +394,13 @@ pub unsafe fn rs_canonicalize_path(
     output.push_str(drive_letter);
     let mut rs = components[0..relative_root].join(RHS_PATH_SEP_STR);
     output.push_str(&rs);
-    rs = relative_output.iter().map(|s|**s).collect::<Vec<_>>().join(RHS_PATH_SEP_STR);
+    rs = relative_output
+        .iter()
+        .map(|s| **s)
+        .collect::<Vec<_>>()
+        .join(RHS_PATH_SEP_STR);
     output.push_str(&rs);
-    if output.len() ==0 {
+    if output.len() == 0 {
         output.push('.');
     }
     // if path starts with ./ then get the next component
@@ -393,7 +408,7 @@ pub unsafe fn rs_canonicalize_path(
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rs_canonicalize_path3(
     path: *mut core::ffi::c_char,
-    len: *mut core::ffi::c_longlong,
+    _len: *mut core::ffi::c_longlong,
 ) -> *mut c_char {
     let input = unsafe { std::ffi::CStr::from_ptr(path) };
     let input = input.to_str().expect("invalid utf8 sequence");
@@ -422,30 +437,31 @@ pub unsafe extern "C" fn rs_cstring_free(ptr: *mut std::ffi::c_char) {
 /// NOTABLE CHANGES. time since unix epoch not y2k
 pub unsafe extern "C" fn rs_stat_single_file(
     path: *const std::ffi::c_char,
-    error: *const *mut std::ffi::c_char,
+    _error: *const *mut std::ffi::c_char,
 ) -> std::ffi::c_longlong {
     // panic!("is rs_stat_single_file Dead code?");
     // println!("HELLO FROM RUST rs_stat_single_file");
     let path = unsafe { CStr::from_ptr(path) }.to_string_lossy();
     if path.starts_with("../C") {
-        unsafe {
+        
             // core::arch::asm!("int3");
             panic!("INVALID PATH");
-        }
+        
     }
     let metadata = match std::fs::metadata(path.as_ref()) {
-        Ok(m)=>m,
-        Err(e)=>{
+        Ok(m) => m,
+        Err(_e) => {
             // 4 is the default for some reason?
             return 4;
         }
     };
-    #[cfg(target_os="windows")]{
-
-                use std::os::windows::fs::MetadataExt;
-                return timestamp_from_win32_mfiletime(metadata.last_write_time());
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        return timestamp_from_win32_mfiletime(metadata.last_write_time());
     }
-    #[cfg(not(target_os="windows"))] {
+    #[cfg(not(target_os = "windows"))]
+    {
         compile_error!("TODO: Statsinglefile on non windows");
     }
     // let modified = match std::fs::metadata(path.as_ref()) {
@@ -525,10 +541,6 @@ fn timestamp_from_win32_mfiletime(filetime_ticks: u64) -> std::ffi::c_longlong {
     shifted as _
 }
 
-
-
-
-
 // #[cfg(target_os="windows")]
 // fn filetime_to_duration_since_2000(ft: &FILETIME) -> Duration {
 //     use std::time::Duration;
@@ -553,10 +565,6 @@ fn timestamp_from_win32_mfiletime(filetime_ticks: u64) -> std::ffi::c_longlong {
 //         .unwrap_or(Duration::ZERO)
 // }
 
-
-
-
-
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn rs_stat_all_files_in_dir(
     dir: *const c_char,
@@ -569,12 +577,12 @@ pub unsafe extern "C" fn rs_stat_all_files_in_dir(
     let dir_cstr = unsafe { std::ffi::CStr::from_ptr(dir) };
     let dir_cow = dir_cstr.to_string_lossy();
     if dir_cow.starts_with("../C") {
-        unsafe {
+        
             // core::arch::asm!("int3");
-            println!("INVALID PATH: {}",dir_cow);
+            println!("INVALID PATH: {}", dir_cow);
             std::io::stdout().flush().ok();
             std::io::stdin().read_line(&mut String::new()).ok();
-        }
+        
     }
 
     let iterator = std::fs::read_dir(dir_cow.as_ref());
@@ -593,12 +601,13 @@ pub unsafe extern "C" fn rs_stat_all_files_in_dir(
         }
         let metadata = metadata.unwrap();
         let mtime = {
-
-            #[cfg(target_os="windows")] {
+            #[cfg(target_os = "windows")]
+            {
                 use std::os::windows::fs::MetadataExt;
                 timestamp_from_win32_mfiletime(metadata.last_write_time())
             }
-            #[cfg(target_os="linux")] {
+            #[cfg(target_os = "linux")]
+            {
                 compile_error!("TODO HANDLE MTIME");
             }
         };
@@ -606,7 +615,7 @@ pub unsafe extern "C" fn rs_stat_all_files_in_dir(
         // let mtime = since_epoch.as_nanos().try_into().unwrap();
         let n = entry.file_name();
         let f = n.to_string_lossy();
-        let c = std::ffi::CString::from_str(&f);
+        let c = std::ffi::CString::new(f.as_bytes());
         if c.is_err() {
             continue;
         }
@@ -632,9 +641,8 @@ pub unsafe extern "C" fn rs_abs_path2(
         let d = std::env::current_dir().unwrap();
         let s = d.to_string_lossy();
         let c = CString::new(s.as_ref()).unwrap();
-        unsafe {cb(string_ctx,c.as_ptr())};
+        unsafe { cb(string_ctx, c.as_ptr()) };
         return;
-
     }
     let r = std::path::absolute(path);
     if r.is_err() {
@@ -685,7 +693,7 @@ pub unsafe extern "C" fn rs_is_same_lexical_drive(a: *const c_char, b: *const c_
 
 #[cfg(test)]
 mod tests {
-    use std::{ffi::CStr, process::Output};
+    use std::{ffi::CStr};
 
     use super::rs_canonicalize_path2;
 
@@ -698,44 +706,43 @@ mod tests {
     }
     #[test]
     fn test_canonicalize_path_compatibility() {
-        for _ in 0..10000 {
-
-            unsafe {
+        for _ in 0..1000 {
+            
                 // These tests match the original Ninja C++ unit tests for CanonicalizePath
-                
+
                 // Test 1: Single dot-dot
                 run_test(c"", c"");
-                
+
                 // Test 2: Trailing slash on dot-dot
                 run_test(c"foo.h", c"foo.h");
-                
+
                 // assert_eq!(rs_canonicalize_path2(c"../".as_ptr() as *mut _), c"..".as_ptr() as *mut _);
-                
+
                 // Test 3: Relative parent components
                 run_test(c"./foo/./bar.h", c"foo/bar.h");
-                
+
                 // assert_eq!(rs_canonicalize_path2(c"../foo".as_ptr() as *mut _), c"../foo".as_ptr() as *mut _);
-                
+
                 // Test 4: Trailing slash removal
                 run_test(c"./x/foo/../bar.h", c"x/bar.h");
                 // Test 5: Multiple parent jumps
                 run_test(c"./x/foo/../../bar.h", c"bar.h");
-                
+
                 // assert_eq!(rs_canonicalize_path2(c"../..".as_ptr() as *mut _), c"../..".as_ptr() as *mut _);
-                
+
                 // Test 6: Multiple jumps with trailing slash
                 run_test(c"foo//bar", c"foo/bar");
-                
+
                 // assert_eq!(rs_canonicalize_path2(c"../../".as_ptr() as *mut _), c"../..".as_ptr() as *mut _);
-                
+
                 // Test 7: Dot-slash prefix cleanup
                 run_test(c"foo//.//..///bar", c"bar");
-                
+
                 // assert_eq!(rs_canonicalize_path2(c"./../".as_ptr() as *mut _), c"..".as_ptr() as *mut _);
-                
+
                 // Test 8: Root-level dot-dot
                 run_test(c"./x/../foo/../../bar.h", c"../bar.h");
-                
+
                 run_test(c"foo/./.", c"foo");
                 run_test(c"..", c"..");
                 run_test(c"../", c"..");
@@ -751,12 +758,12 @@ mod tests {
                 run_test(c".", c".");
                 run_test(c"./.", c".");
                 run_test(c".", c".");
-                
+
                 run_test(c"foo/..", c".");
                 run_test(c"foo/.._bar", c"foo/.._bar");
                 // yes it really gets this long
                 run_test(c"C:\\Program Files(x86)\\Microsoft\\Visual Studio\\10.0.0.1000\\msbuild\\x86\\64\\msvcrt",c"C:/Program Files(x86)/Microsoft/Visual Studio/10.0.0.1000/msbuild/x86/64/msvcrt");
-            }
+            
         }
     }
 

@@ -1,10 +1,9 @@
 use std::{
     ffi::c_char,
-    fmt::{Write, format},
     str::FromStr,
 };
 
-use crate::{CUR_DIR, rs_abs_path2, rs_canonicalize_path};
+use crate::CUR_DIR;
 
 pub fn win32_includes_normalized(
     input: &str,
@@ -47,7 +46,7 @@ pub fn win32_includes_normalized(
         };
     }
     if p_relative_to == abs_input {
-        output.write_str(CUR_DIR);
+        output.push_str(CUR_DIR);
         return Ok(true);
     }
     let mut input_comps = abs_input.components();
@@ -84,7 +83,7 @@ pub unsafe extern "C" fn rs_includes_normalize(
     input: *const c_char,
     relative_to: *const c_char,
     output: *mut *mut c_char,
-    err: *mut *mut c_char
+    err: *mut *mut c_char,
 ) -> bool {
     let input = unsafe { std::ffi::CStr::from_ptr(input) }
         .to_str()
@@ -93,10 +92,10 @@ pub unsafe extern "C" fn rs_includes_normalize(
         .to_str()
         .expect("failed to convert relativeto");
     let mut rust_string = String::with_capacity(input.len());
-    let b = match win32_includes_normalized(input, relative_to, &mut rust_string){
-        Ok(b)=>b,
+    let b = match win32_includes_normalized(input, relative_to, &mut rust_string) {
+        Ok(b) => b,
         Err(e) => {
-            unsafe {*err = std::ffi::CString::new(e).unwrap().into_raw()};
+            unsafe { *err = std::ffi::CString::new(e).unwrap().into_raw() };
             false
         }
     };
