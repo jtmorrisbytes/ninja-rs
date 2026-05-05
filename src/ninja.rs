@@ -76,8 +76,8 @@ impl NinjaDebugModes {
 #[allow(dead_code)]
 pub struct Parallelism(usize);
 impl Parallelism {
-    const DEFAULT_UNLIMITED_JOBS: usize = u8::MAX as usize;
-    const DEFAULT_JOBS_COUNT: usize = 3;
+    pub const DEFAULT_UNLIMITED_JOBS: usize = u8::MAX as usize;
+    pub const DEFAULT_JOBS_COUNT: usize = 3;
     pub fn parse(s: &str) -> Result<Self, String> {
         let mut n: usize = s.parse().map_err(|e: ParseIntError| e.to_string())?;
         if n == 0 {
